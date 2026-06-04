@@ -44,3 +44,7 @@ O objetivo principal foi garantir consistência ACID (banco vs memória), preven
 ### 9. Validação Lógica de Payloads
 - **Problema:** Se o JSON oriundo do MQL5 estivesse avariado e os dicionários fossem mal parseados, o parser retornava listas vazias sem estourar exceções. O pipeline rodava silenciosamente, mascarando dados truncados ou conexões de rede instáveis.
 - **Solução:** Foram fixados warnings de logs explícitos. Se `tape_rows` e `dom_rows` não forem nulos mas os parsers devolverem 0 registros, logs como `"payload pode estar malformado"` ou `"DOM sensor pode estar offline"` são gerados para ajudar em trouble-shooting no servidor.
+
+### 10. Transferência do `delta_price_ticks` para o Objeto e Persistência O(1)
+- **Problema:** O classificador O(1) exigia o `delta_price_ticks`, e o cálculo do stateful cursor em memória funcionava bem, mas esse valor vital era descartado da persistência. Isso forçava o DuckDB a tentar recalcular o delta depois usando a função analítica `LAG()`, o que era semântica e tecnicamente falho (gerava deltas incorretos baseados no registro e não no preço do bucket).
+- **Solução:** O valor exato `dp`, medido via stateful cursor em memória na construção do `LiquidityCluster`, foi roteado diretamente para o atributo interno `c.delta_price_ticks` do modelo, tornando-o disponível para persistência direta no DuckDB sem cálculos complexos *offline*.

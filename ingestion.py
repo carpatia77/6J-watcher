@@ -69,6 +69,7 @@ class IngestionService:
                 total_bid = e.volume if e.side.value == "buy"  else 0,
                 total_ask = e.volume if e.side.value == "sell" else 0,
                 cumdelta  = e.volume if e.side.value == "buy"  else -e.volume,
+                delta_price_ticks = dp,
                 batch_id  = batch_id,
                 raw_payload = e.raw,
             )
