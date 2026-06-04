@@ -77,7 +77,8 @@ class DuckDBRepository:
             last_seen          TIMESTAMP,
             dominant_signature VARCHAR,
             days_active        INTEGER,
-            reliability_score  DOUBLE
+            reliability_score  DOUBLE,
+            PRIMARY KEY (symbol, price)
         )""")
 
     # ── Inserts ──────────────────────────────────────────────────────────────
@@ -103,8 +104,16 @@ class DuckDBRepository:
             self.conn.executemany("INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     def upsert_key_level(self, level: KeyLevel):
-        self.conn.execute("DELETE FROM key_levels WHERE symbol=? AND price=?", [level.symbol, level.price])
-        self.conn.execute("INSERT INTO key_levels VALUES (?,?,?,?,?,?,?,?)",
+        self.conn.execute(
+            """INSERT INTO key_levels 
+               VALUES (?,?,?,?,?,?,?,?) 
+               ON CONFLICT (symbol, price) DO UPDATE SET 
+               occurrences=EXCLUDED.occurrences, 
+               first_seen=EXCLUDED.first_seen, 
+               last_seen=EXCLUDED.last_seen, 
+               dominant_signature=EXCLUDED.dominant_signature, 
+               days_active=EXCLUDED.days_active, 
+               reliability_score=EXCLUDED.reliability_score""",
             [level.symbol, level.price, level.occurrences, level.first_seen,
              level.last_seen, level.dominant_signature, level.days_active, level.reliability_score])
 
