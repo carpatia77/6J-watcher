@@ -25,8 +25,25 @@ cfg     = Config()
 repo    = DuckDBRepository(cfg.db_path)
 matrix  = LiquidityMatrix(cfg.symbol, cfg.tick_size)
 engine  = AdaptivePatternEngine(profile_path=str(BASE_DIR / "profile.json"))
-narrator = Narrator()
-service = IngestionService(repo, matrix, engine, cfg)
+
+# LLM Client — graceful degradation se NVIDIA_API_KEY não estiver configurada
+llm_client = None
+if cfg.nvidia_api_key:
+    try:
+        from llm_client import NvidiaLLMClient
+        llm_client = NvidiaLLMClient(
+            api_key=cfg.nvidia_api_key,
+            context_model=cfg.llm_context_model,
+            reasoning_model=cfg.llm_reasoning_model,
+            timeout=cfg.llm_timeout_seconds,
+            max_calls_per_hour=cfg.llm_max_calls_hour,
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"LLM client não disponível: {e}")
+
+narrator = Narrator(engine=engine, cfg=cfg, llm_client=llm_client)
+service = IngestionService(repo, matrix, engine, cfg, narrator=narrator)
 
 
 class Handler(BaseHTTPRequestHandler):

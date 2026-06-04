@@ -1,8 +1,18 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 
 BASE_DIR = Path(__file__).parent
+
+# Carrega .env se existir (para NVIDIA_API_KEY etc.)
+_env_path = BASE_DIR / ".env"
+if _env_path.exists():
+    for line in _env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, val = line.partition("=")
+            os.environ.setdefault(key.strip(), val.strip())
 
 @dataclass
 class Config:
@@ -17,6 +27,18 @@ class Config:
         "LONDON":   (8,  13),
         "NEW_YORK": (13, 22),
     })
+
+    # --- Narrator / Alertas ---
+    min_alert_win_rate:        float = 0.50
+    min_alert_sample_size:     int   = 30
+    confluence_tick_tolerance: int   = 20  # ticks de proximidade para confluência
+
+    # --- LLM (NVIDIA API) ---
+    nvidia_api_key:      str   = field(default_factory=lambda: os.environ.get("NVIDIA_API_KEY", ""))
+    llm_context_model:   str   = "meta/llama-3.1-8b-instruct"
+    llm_reasoning_model: str   = "deepseek-ai/deepseek-v4"
+    llm_timeout_seconds: float = 5.0
+    llm_max_calls_hour:  int   = 100
 
     def session_for(self, hour_utc: int) -> str:
         for name, (start, end) in self.session_utc.items():

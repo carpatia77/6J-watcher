@@ -21,11 +21,12 @@ from repository_duckdb import DuckDBRepository
 
 
 class IngestionService:
-    def __init__(self, repo: DuckDBRepository, matrix: LiquidityMatrix, engine: AdaptivePatternEngine, cfg: Config):
+    def __init__(self, repo: DuckDBRepository, matrix: LiquidityMatrix, engine: AdaptivePatternEngine, cfg: Config, narrator=None):
         self.repo   = repo
         self.matrix = matrix
         self.engine = engine
         self.cfg    = cfg
+        self.narrator = narrator
         self.last_closed_price = None
 
     def ingest_batch(self, tape_rows: List[Dict], dom_rows: List[Dict], symbol: str) -> List[LiquidityCluster]:
@@ -108,5 +109,9 @@ class IngestionService:
         except Exception:
             self.matrix.restore(snap)
             raise
+
+        # Invalida cache do narrator para refletir novos dados
+        if self.narrator is not None:
+            self.narrator.invalidate_cache()
 
         return clusters
