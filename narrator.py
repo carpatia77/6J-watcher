@@ -12,10 +12,11 @@ Camadas:
   3. LLM Integration — Narrativa institucional via NVIDIA (Llama 3B + DeepSeek V4)
   4. Caching         — Evita reprocessamento em múltiplas chamadas ao /report
 """
+import asyncio
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from time import time as _time
 from typing import Dict, List, Optional, Tuple
 
@@ -115,6 +116,7 @@ class Narrator:
         Confluências detectadas:
           - BREAKOUT_AT_DEFENSE: Breakout Genuine em nível com Defense Line
           - ACCUMULATION_ABSORPTION: Iceberg Accumulation + Absorption Passive
+          - DISTRIBUTION_ABSORPTION: Iceberg Distribution + Absorption Passive
         """
         if len(hotspots) < 2:
             return []
@@ -242,16 +244,16 @@ class Narrator:
         session_analysis: Dict,
         notable_events: List[Dict],
     ) -> str:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         lines = [
-            f"# 6J Watcher — Intelligence Report",
-            f"**Symbol:** {symbol}  |  **Date:** {today} UTC",
+            f"# 6J Watcher — Relatório de Inteligência",
+            f"**Símbolo:** {symbol}  |  **Data:** {today} UTC",
             "",
             "---",
             "",
-            "## Executive Summary",
-            "This report summarizes institutional aggression and passive intention",
-            "captured from ClusterDelta footprint and DOM data.",
+            "## Resumo Executivo",
+            "Este relatório sumariza a agressão institucional e intenção passiva",
+            "capturadas do footprint do ClusterDelta e dados do DOM.",
             "",
             "---",
             "",
@@ -273,37 +275,37 @@ class Narrator:
             lines += ["", "---", ""]
 
         # --- Hotspots ---
-        lines.append("## Institutional Hotspots")
+        lines.append("## Hotspots Institucionais")
         if hotspots:
-            lines.append("| Price | Occurrences | Dominant Signature | Avg Confidence |")
-            lines.append("|-------|-------------|-------------------|----------------|")
+            lines.append("| Preço | Ocorrências | Assinatura Dominante | Confiança Média |")
+            lines.append("|-------|-------------|----------------------|-----------------|")
             for h in hotspots[:15]:
                 lines.append(
                     f"| {h['price']:.5f} | {h['occurrences']} | "
                     f"{h.get('dominant_signature', '?')} | {h.get('avg_confidence', 0):.2f} |"
                 )
         else:
-            lines.append("No hotspots detected yet.")
+            lines.append("Nenhum hotspot detectado ainda.")
 
-        lines += ["", "---", "", "## Signature Distribution"]
+        lines += ["", "---", "", "## Distribuição de Assinaturas"]
         if signature_distribution:
-            lines.append("| Signature | Count |")
-            lines.append("|-----------|-------|")
+            lines.append("| Assinatura | Contagem |")
+            lines.append("|------------|----------|")
             for row in signature_distribution:
                 lines.append(f"| {row[0]} | {row[1]} |")
         else:
-            lines.append("No data.")
+            lines.append("Sem dados.")
 
-        lines += ["", "---", "", "## Session Analysis"]
+        lines += ["", "---", "", "## Análise por Sessão"]
         if session_analysis:
             for session, sigs in session_analysis.items():
                 lines.append(f"### {session.upper()}")
                 for sig, cnt in sigs.items():
                     lines.append(f"- {sig}: {cnt}")
         else:
-            lines.append("No session data yet.")
+            lines.append("Sem dados de sessão ainda.")
 
-        lines += ["", "---", "", "## Notable Events"]
+        lines += ["", "---", "", "## Eventos Notáveis"]
         if notable_events:
             for e in notable_events[:10]:
                 if isinstance(e, dict):
@@ -314,7 +316,7 @@ class Narrator:
                 else:
                     lines.append(f"- {e}")
         else:
-            lines.append("No notable events.")
+            lines.append("Nenhum evento notável.")
 
         return "\n".join(lines)
 
@@ -370,7 +372,6 @@ class Narrator:
         prompt = self._build_narrative_prompt(symbol, high_quality)
 
         try:
-            import asyncio
             response = await asyncio.wait_for(
                 self.llm_client.reason(prompt, ""),
                 timeout=self.cfg.llm_timeout_seconds,
