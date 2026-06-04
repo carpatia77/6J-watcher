@@ -62,3 +62,10 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** Inclusão da biblioteca `numpy` (já havia `pandas`) no arquivo de dependências do projeto.
 - **Motivo:** O DuckDB nativamente expõe a função `.fetchdf()` que retorna um DataFrame Pandas para facilitar a análise vetorial, e a biblioteca NumPy será utilizada extensivamente no `signature_profiler` para o cálculo otimizado e seguro dos percentis empíricos de Volume e Imbalance (`np.percentile`).
 
+### Passo 3: Criação do Calibrador Offline (`signature_profiler.py`)
+- **Ação:** Implementação do Módulo A da arquitetura V2. O módulo usa DuckDB (`read_only=True`) para ler o histórico, aplicar SQL Window Functions para calcular MFE/MAE (Maximum Favorable/Adverse Excursion) e exportar um `profile.json` com os percentis (rank normalization).
+- **Ajustes Aplicados em relação ao Manifesto Original:**
+  1. O SQL foi parametrizado (via f-strings) para suportar a injeção do `horizon_minutes`, evitando hardcodes.
+  2. Implementado a função `LAG()` no SQL para assegurar o cálculo histórico de `delta_price_ticks`, vital para paridade de dados entre backtest e o pipeline de Ingestão em memória.
+  3. O print foi substituído por chamadas ao módulo interno `logging`.
+
