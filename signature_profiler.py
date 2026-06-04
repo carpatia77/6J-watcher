@@ -26,21 +26,17 @@ class SignatureProfiler:
     def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: float = 0.00005) -> dict:
         """
         Executa o pipeline de perfilamento empírico.
-        Nota sobre Memória (Limitação de Design): 
-        O uso atual de `.fetchdf()` carrega todo o result set na memória RAM para o Pandas. 
-        Para lookback_days padrão (ex: 30) de 1 único ativo, isso é aceitável e performático. 
-        Contudo, para expansões (múltiplos símbolos ou 1 ano de histórico de tape), isso poderá engatilhar um Out-Of-Memory (OOM). 
-        Futuras otimizações podem requerer streaming processing via chunks (`fetchmany`) e percentis aproximados (T-Digest).
+        Toda a agregação, percentis e regras direcionais rodam nativamente no motor C++ do DuckDB.
+        Zero risco de OOM na RAM do Python (O(resultado)).
         """
         if not isinstance(horizon_minutes, int) or not (1 <= horizon_minutes <= 1440):
             raise ValueError("horizon_minutes must be an int between 1 and 1440")
             
         interval_clause = f"INTERVAL '{horizon_minutes}' MINUTE"
-        cutoff = datetime.now() - timedelta(days=lookback_days)
+        cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d %H:%M:%S')
         
-        # 1. CÁLCULO VETORIAL DE MFE/MAE NO DUCKDB (Substitui o loop O(N^2) do Python)
-        # Usamos Window Functions com RANGE BETWEEN para olhar o futuro de cada cluster.
-        mfe_mae_query = f"""
+        # 1. CÁLCULO VETORIAL DE MFE/MAE NO DUCKDB E WIN/LOSS
+        base_query = f"""
         WITH cluster_excursions AS (
             SELECT 
                 c.timestamp,
@@ -52,47 +48,87 @@ class SignatureProfiler:
                 c.total_ask,
                 (c.total_bid + c.total_ask) AS total_vol,
                 ABS(c.total_bid - c.total_ask) AS imbalance,
-                MAX(t.price) OVER (
+                COALESCE(MAX(t.price) OVER (
                     PARTITION BY c.symbol 
                     ORDER BY t.timestamp 
                     RANGE BETWEEN CURRENT ROW AND {interval_clause} FOLLOWING
-                ) AS max_future_price,
-                MIN(t.price) OVER (
+                ), c.price) AS max_future_price,
+                COALESCE(MIN(t.price) OVER (
                     PARTITION BY c.symbol 
                     ORDER BY t.timestamp 
                     RANGE BETWEEN CURRENT ROW AND {interval_clause} FOLLOWING
-                ) AS min_future_price
+                ), c.price) AS min_future_price
             FROM liquidity_clusters c
             LEFT JOIN tape_events t 
               ON c.symbol = t.symbol 
              AND t.timestamp >= c.timestamp 
              AND t.timestamp <= c.timestamp + {interval_clause}
-            WHERE c.symbol = ? AND c.timestamp > ?
+            WHERE c.symbol = '{symbol}' AND c.timestamp > '{cutoff}'
+        ),
+        mfe_mae_calc AS (
+            SELECT 
+                *,
+                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'magnet_effect') THEN TRUE ELSE FALSE END AS is_bullish,
+                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'magnet_effect') 
+                     THEN max_future_price - c_price 
+                     ELSE c_price - min_future_price END AS mfe,
+                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'magnet_effect') 
+                     THEN c_price - min_future_price 
+                     ELSE max_future_price - c_price END AS mae
+            FROM cluster_excursions
         )
         SELECT 
-            timestamp, c_price, delta_price_ticks, behavior_signature, session, 
-            total_vol, imbalance, max_future_price, min_future_price
-        FROM cluster_excursions
+            *,
+            CASE WHEN mfe > ABS(mae) AND mfe > 0 THEN 1 ELSE 0 END AS win,
+            CASE WHEN mfe > 0 THEN mfe ELSE 0 END AS gross_profit,
+            CASE WHEN mae < 0 THEN ABS(mae) ELSE 0 END AS gross_loss
+        FROM mfe_mae_calc
         """
         
         try:
-            df = self.conn.execute(mfe_mae_query, [symbol, cutoff]).fetchdf()
+            rel = self.conn.sql(base_query)
+            
+            sig_query = """
+                SELECT 
+                    behavior_signature,
+                    session,
+                    COUNT(*) AS cluster_count,
+                    SUM(win) AS wins,
+                    SUM(gross_profit) AS total_gross_profit,
+                    SUM(gross_loss) AS total_gross_loss,
+                    AVG(mfe) AS avg_mfe
+                FROM rel
+                GROUP BY behavior_signature, session
+            """
+            sig_df = self.conn.sql(sig_query).fetchdf()
+            
+            perc_query = """
+                SELECT 
+                    session,
+                    COUNT(*) AS session_count,
+                    QUANTILE_CONT(total_vol, 0.50) AS vol_p50,
+                    QUANTILE_CONT(total_vol, 0.75) AS vol_p75,
+                    QUANTILE_CONT(total_vol, 0.90) AS vol_p90,
+                    QUANTILE_CONT(total_vol, 0.95) AS vol_p95,
+                    QUANTILE_CONT(total_vol, 0.99) AS vol_p99,
+                    QUANTILE_CONT(imbalance, 0.50) AS imb_p50,
+                    QUANTILE_CONT(imbalance, 0.75) AS imb_p75,
+                    QUANTILE_CONT(imbalance, 0.90) AS imb_p90,
+                    QUANTILE_CONT(imbalance, 0.95) AS imb_p95,
+                    QUANTILE_CONT(imbalance, 0.99) AS imb_p99
+                FROM rel
+                GROUP BY session
+            """
+            perc_df = self.conn.sql(perc_query).fetchdf()
+            
         except Exception as e:
             logger.error(f"[Profiler] DuckDB execution failed: {e}")
             raise
 
-        if df.empty:
+        if perc_df.empty:
             return {"error": "No historical data found."}
 
-        # 2. CÁLCULO DE WIN/LOSS BASEADO NA DIRECIONALIDADE DA ASSINATURA
-        bullish_sigs = ['ICEBERG_ACCUMULATION', 'BREAKOUT_GENUINE', 'MAGNET_EFFECT']
-        
-        df['is_bullish'] = df['behavior_signature'].isin(bullish_sigs)
-        df['mfe'] = np.where(df['is_bullish'], df['max_future_price'].fillna(df['c_price']) - df['c_price'], df['c_price'] - df['min_future_price'].fillna(df['c_price']))
-        df['mae'] = np.where(df['is_bullish'], df['c_price'] - df['min_future_price'].fillna(df['c_price']), df['max_future_price'].fillna(df['c_price']) - df['c_price'])
-        df['win'] = (df['mfe'] > np.abs(df['mae'])) & (df['mfe'] > 0)
-
-        return self._generate_empirical_percentiles(df)
+        return self._generate_empirical_percentiles(sig_df, perc_df)
 
     def _get_fallback_thresholds(self, sess: str) -> dict:
         fallbacks = {
@@ -103,49 +139,56 @@ class SignatureProfiler:
         }
         return fallbacks.get(sess, fallbacks["OFF_HOURS"])
 
-    def _generate_empirical_percentiles(self, df) -> dict:
+    def _generate_empirical_percentiles(self, sig_df, perc_df) -> dict:
         """
-        Substitui Média/StdDev por Percentis Empíricos (Rank Normalization).
-        Imune a outliers (spikes de volume no Payroll).
+        Monta o profile a partir das agregações colunares do DuckDB.
         """
         profile = {
-            "metadata": {"generated_at": datetime.now().isoformat(), "type": "empirical_percentiles"},
+            "metadata": {"generated_at": datetime.now().isoformat(), "type": "empirical_percentiles_duckdb"},
             "signatures": {},
             "thresholds": {}
         }
 
         # Estatísticas de Win Rate por Assinatura e Sessão
-        for (sig, sess), group in df.groupby(['behavior_signature', 'session']):
-            if group.empty: continue
-            wins = group['win'].sum()
-            gross_profit = group[group['mfe'] > 0]['mfe'].sum()
-            gross_loss = abs(group[group['mae'] < 0]['mae'].sum())
+        for _, row in sig_df.iterrows():
+            sig = row['behavior_signature']
+            sess = row['session']
+            count = row['cluster_count']
+            if count == 0: continue
+            
+            wins = row['wins']
+            gross_profit = row['total_gross_profit']
+            gross_loss = row['total_gross_loss']
             pf = gross_profit / gross_loss if gross_loss > 0 else float('inf')
             
             profile["signatures"][f"{sig}_{sess}"] = {
-                "count": len(group),
-                "win_rate": round(wins / len(group), 3),
+                "count": int(count),
+                "win_rate": round(wins / count, 3),
                 "profit_factor": round(pf, 2),
-                "avg_mfe": round(group['mfe'].mean(), 5)
+                "avg_mfe": round(row['avg_mfe'], 5)
             }
 
         # Tabelas de Percentis para o Motor em Tempo Real
-        percentiles_to_calc = [50, 75, 90, 95, 99]
-        
         MIN_SAMPLES_FOR_PERCENTILES = 100
         
-        for sess, group in df.groupby('session'):
-            if group.empty: continue
+        for _, row in perc_df.iterrows():
+            sess = row['session']
+            count = row['session_count']
             
-            if len(group) < MIN_SAMPLES_FOR_PERCENTILES:
-                logger.warning(f"[Profiler] Sessão {sess} tem apenas {len(group)} amostras; usando fallback thresholds")
+            if count < MIN_SAMPLES_FOR_PERCENTILES:
+                logger.warning(f"[Profiler] Sessão {sess} tem apenas {count} amostras; usando fallback thresholds")
                 profile["thresholds"][sess] = self._get_fallback_thresholds(sess)
                 continue
             
-            # Calcula os percentis exatos para Volume, Imbalance e Adiciona Tick Displacement (Proxy)
             profile["thresholds"][sess] = {
-                "vol_percentiles": {str(p): float(v) for p, v in zip(percentiles_to_calc, np.percentile(group['total_vol'], percentiles_to_calc))},
-                "imb_percentiles": {str(p): float(v) for p, v in zip(percentiles_to_calc, np.percentile(group['imbalance'], percentiles_to_calc))},
+                "vol_percentiles": {
+                    "50": float(row['vol_p50']), "75": float(row['vol_p75']), 
+                    "90": float(row['vol_p90']), "95": float(row['vol_p95']), "99": float(row['vol_p99'])
+                },
+                "imb_percentiles": {
+                    "50": float(row['imb_p50']), "75": float(row['imb_p75']), 
+                    "90": float(row['imb_p90']), "95": float(row['imb_p95']), "99": float(row['imb_p99'])
+                },
             }
 
         return profile

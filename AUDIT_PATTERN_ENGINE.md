@@ -113,3 +113,7 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** Documentado na docstring de `build_profile` o risco inerente do uso atual de `.fetchdf()`.
 - **Motivo:** O `.fetchdf()` carrega todos os milhões de linhas num DataFrame Pandas em RAM. Para um símbolo e um horizonte de 30 dias de *tick data* (condição nominal), é a forma mais ágil de processamento. Contudo, em projeções de _Big Data_ futuras, o motor não escalará horizontalmente para anos de dados sem OOM (Out-of-Memory). A alternativa para o futuro (chunks via `.fetchmany()` + streaming percentiles/T-Digest) agora está registrada na documentação para não pegar os desenvolvedores de surpresa.
 
+### Melhoria de Engenharia 3: Refatoração Anti-OOM via DuckDB Native Aggregation (`signature_profiler.py`)
+- **Ação:** O pipeline de análise foi reescrito. Em vez de ler os milhões de registros brutos (`fetchdf()`) para calcular `mfe`, `mae`, `win_rate` e percentis (`np.percentile`) na memória RAM do Python via Pandas, toda essa algebra e lógica condicional foi empurrada para CTEs no banco de dados.
+- **Motivo:** Usando a função nativa do motor colunar `QUANTILE_CONT`, combinada com sub-agrupamentos da API Relacional (`self.conn.sql(...)`), o DuckDB processa todo o disco e devolve para o Python apenas dois *Micro-DataFrames* pré-agregados minúsculos. O consumo de RAM da aplicação despenca de Gigabytes para alguns Kilobytes constantes $O(1)$, viabilizando backtests maciços e janelas temporais de anos num laptop comum sem estourar a memória (OOM).
+
