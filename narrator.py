@@ -16,7 +16,8 @@ import hashlib
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from time import time as _time
+from typing import Dict, List, Optional, Tuple
 
 from adaptive_pattern_engine import AdaptivePatternEngine
 from config import Config
@@ -27,12 +28,30 @@ logger = logging.getLogger(__name__)
 class Narrator:
     """Orquestrador cognitivo da última milha do pipeline 6J Watcher."""
 
+    CACHE_TTL_SECONDS = 300  # 5 minutos
+
     def __init__(self, engine: AdaptivePatternEngine, cfg: Optional[Config] = None,
                  llm_client=None):
         self.engine = engine
         self.cfg = cfg or Config()
         self.llm_client = llm_client  # Optional — graceful degradation se None
-        self._report_cache: Dict[str, str] = {}
+        self._report_cache: Dict[str, Tuple[str, float]] = {}  # (report, timestamp)
+
+        # Validação defensiva de atributos críticos do Config
+        _required = {
+            "min_alert_sample_size": 30,
+            "min_alert_win_rate": 0.50,
+            "confluence_tick_tolerance": 20,
+            "tick_size": 0.00005,
+            "llm_timeout_seconds": 5.0,
+        }
+        missing = [a for a in _required if not hasattr(self.cfg, a)]
+        if missing:
+            logger.warning(
+                f"[Narrator] Config missing attributes: {missing}. Using safe defaults."
+            )
+            for attr in missing:
+                setattr(self.cfg, attr, _required[attr])
 
     # ──────────────────────────────────────────────
     #  P0: SMART ALERTS
@@ -102,6 +121,31 @@ class Narrator:
 
         tick_tol = self.cfg.confluence_tick_tolerance * self.cfg.tick_size
         confluences: List[Dict] = []
+        seen: set = set()  # Deduplicação por (preço arredondado, tipo de par)
+
+        _RULES = {
+            frozenset(["breakout_genuine", "defense_line"]): {
+                "type": "BREAKOUT_AT_DEFENSE",
+                "interpretation": (
+                    "Rompimento válido em nível defendido — "
+                    "alta probabilidade de continuação direcional"
+                ),
+            },
+            frozenset(["iceberg_accumulation", "absorption_passive"]): {
+                "type": "ACCUMULATION_ABSORPTION",
+                "interpretation": (
+                    "Acumulação institucional com absorção passiva — "
+                    "reversão iminente no nível"
+                ),
+            },
+            frozenset(["iceberg_distribution", "absorption_passive"]): {
+                "type": "DISTRIBUTION_ABSORPTION",
+                "interpretation": (
+                    "Distribuição institucional com absorção passiva — "
+                    "teto de preço ativo, evitar compras"
+                ),
+            },
+        }
 
         for i, h1 in enumerate(hotspots):
             for h2 in hotspots[i + 1:]:
@@ -113,41 +157,22 @@ class Narrator:
                 sig2 = h2.get("dominant_signature", "")
                 pair = frozenset([sig1, sig2])
 
-                # BREAKOUT em DEFENSE_LINE
-                if pair == frozenset(["breakout_genuine", "defense_line"]):
-                    confluences.append({
-                        "type": "BREAKOUT_AT_DEFENSE",
-                        "price": h1["price"],
-                        "components": [sig1, sig2],
-                        "interpretation": (
-                            "Rompimento válido em nível defendido — "
-                            "alta probabilidade de continuação direcional"
-                        ),
-                    })
+                rule = _RULES.get(pair)
+                if not rule:
+                    continue
 
-                # ACCUMULATION + ABSORPTION = reversão iminente
-                if pair == frozenset(["iceberg_accumulation", "absorption_passive"]):
-                    confluences.append({
-                        "type": "ACCUMULATION_ABSORPTION",
-                        "price": h1["price"],
-                        "components": [sig1, sig2],
-                        "interpretation": (
-                            "Acumulação institucional com absorção passiva — "
-                            "reversão iminente no nível"
-                        ),
-                    })
+                # Chave de deduplicação: preço arredondado + tipo
+                dedup_key = (round(h1["price"], 5), rule["type"])
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
 
-                # DISTRIBUTION + ABSORPTION = teto institucional
-                if pair == frozenset(["iceberg_distribution", "absorption_passive"]):
-                    confluences.append({
-                        "type": "DISTRIBUTION_ABSORPTION",
-                        "price": h1["price"],
-                        "components": [sig1, sig2],
-                        "interpretation": (
-                            "Distribuição institucional com absorção passiva — "
-                            "teto de preço ativo, evitar compras"
-                        ),
-                    })
+                confluences.append({
+                    "type": rule["type"],
+                    "price": h1["price"],
+                    "components": [sig1, sig2],
+                    "interpretation": rule["interpretation"],
+                })
 
         if confluences:
             logger.info(f"[Narrator] {len(confluences)} confluência(s) detectada(s)")
@@ -169,21 +194,39 @@ class Narrator:
         """Gera relatório Markdown com hotspots, confluências, distribuição e sessão."""
         notable_events = notable_events or []
 
-        # --- P2: Cache ---
-        cache_key = hashlib.md5(
-            f"{symbol}:{len(hotspots)}:{str(signature_distribution)}"
-            f":{str(session_analysis)}".encode()
-        ).hexdigest()
+        # --- P2: Cache com TTL ---
+        cache_key = self._compute_cache_key(
+            symbol, hotspots, signature_distribution, session_analysis
+        )
 
         if cache_key in self._report_cache:
-            logger.debug("[Narrator] Cache hit para daily_report")
-            return self._report_cache[cache_key]
+            cached_report, cached_time = self._report_cache[cache_key]
+            if _time() - cached_time < self.CACHE_TTL_SECONDS:
+                logger.debug("[Narrator] Cache hit para daily_report")
+                return cached_report
+            else:
+                logger.debug("[Narrator] Cache expirado, regenerando")
+                del self._report_cache[cache_key]
 
         report = self._generate_report(
             symbol, hotspots, signature_distribution, session_analysis, notable_events
         )
-        self._report_cache[cache_key] = report
+        self._report_cache[cache_key] = (report, _time())
         return report
+
+    def _compute_cache_key(
+        self, symbol: str, hotspots: List[Dict],
+        signature_distribution: List, session_analysis: Dict,
+    ) -> str:
+        """Gera cache key baseado no CONTEÚDO, não apenas no tamanho."""
+        hotspots_sorted = sorted(hotspots, key=lambda h: h.get("price", 0))
+        payload = (
+            f"{symbol}|"
+            f"{json.dumps(hotspots_sorted, sort_keys=True, default=str)}|"
+            f"{json.dumps(signature_distribution, sort_keys=True, default=str)}|"
+            f"{json.dumps(session_analysis, sort_keys=True, default=str)}"
+        )
+        return hashlib.md5(payload.encode()).hexdigest()
 
     def invalidate_cache(self):
         """Limpa cache quando novos dados chegam via ingest_batch."""
@@ -261,7 +304,13 @@ class Narrator:
         lines += ["", "---", "", "## Notable Events"]
         if notable_events:
             for e in notable_events[:10]:
-                lines.append(f"- {e}")
+                if isinstance(e, dict):
+                    price = e.get("price", "?")
+                    sig = e.get("signature", e.get("type", "?"))
+                    ts = e.get("timestamp", "")
+                    lines.append(f"- **{sig}** @ {price} ({ts})")
+                else:
+                    lines.append(f"- {e}")
         else:
             lines.append("No notable events.")
 

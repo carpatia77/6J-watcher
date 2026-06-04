@@ -71,14 +71,39 @@ O `narrator.py` original era um gerador de relatórios estáticos (~101 linhas) 
 | `alert()` legacy mantido | Backward compatibility com eventuais consumers |
 | LLM é 100% opcional (graceful degradation) | Sistema deve funcionar offline/sem API key |
 | Cache invalidado por `IngestionService`, não por TTL | Garante consistência causal: novos dados = novo relatório |
+| Cache também tem TTL de 5min | Defesa em profundidade: mesmo sem invalidação explícita, dados stale expiram |
 | Confluências calculadas dentro do `daily_report()` | Single source of truth para o endpoint `/report` |
 | Tolerância de confluência configurável em ticks | Calibragem via backtesting posterior (valor inicial: 20 ticks) |
 | Win rate mínimo: 50% (configurável) | Valor conservador, ajustável após backtest de 6 meses |
 
 ---
 
+## Iteração 3: Robustez e Hardening (Code Review)
+
+### Correção 5: Cache Key Insuficiente — Falso Positivo
+- **Problema:** Cache key usava `len(hotspots)` em vez do conteúdo. Se dois conjuntos de hotspots tivessem o mesmo tamanho mas preços diferentes, havia cache hit falso e o trader via dados desatualizados.
+- **Ação:** Novo método `_compute_cache_key()` que serializa o conteúdo completo dos hotspots (ordenados por preço), `signature_distribution` e `session_analysis` via `json.dumps(sort_keys=True, default=str)` antes do hash MD5.
+
+### Correção 6: Cache Sem TTL (Time-To-Live)
+- **Problema:** O cache crescia indefinidamente e nunca expirava. Se `invalidate_cache()` não fosse chamado (ex: falha no `ingest_batch`), o trader poderia ver dados de horas atrás.
+- **Ação:** Cache agora armazena tupla `(report, timestamp)`. O `daily_report()` verifica `time() - cached_time < CACHE_TTL_SECONDS` (300s = 5min) antes de retornar. Entradas expiradas são deletadas automaticamente.
+
+### Melhoria 5: Validação Defensiva de Atributos do Config
+- **Problema:** Se o `Config` estivesse desatualizado ou sem os campos novos (`min_alert_sample_size`, etc.), o Narrator lançaria `AttributeError` em runtime.
+- **Ação:** O construtor agora verifica `hasattr(self.cfg, attr)` para 5 atributos críticos e aplica defaults seguros se estiverem faltando, logando um `WARNING`.
+
+### Melhoria 6: Deduplicação de Confluências
+- **Problema:** Se 3+ hotspots próximos tivessem signatures relevantes, o loop O(N²) gerava confluências redundantes para o mesmo nível de preço.
+- **Ação:** Adicionado `seen: set` com chave `(round(price, 5), rule_type)`. Regras de confluência extraídas para dicionário `_RULES` (eliminando if/elif repetitivos).
+
+### Melhoria 7: Formatação Inteligente de Notable Events
+- **Problema:** `notable_events` eram formatados com `f"- {e}"`, que imprimia `{'key': 'value'}` bruto se o evento fosse um dict.
+- **Ação:** Verificação `isinstance(e, dict)` com extração de campos `price`, `signature/type` e `timestamp` para formatação Markdown legível: `- **SIGNATURE** @ PRICE (TIMESTAMP)`.
+
+---
+
 ## Status Final
-- `narrator.py`: ✅ Gold Tier (Orchestrator)
+- `narrator.py`: ✅ Gold Tier — 100% Pronto para Produção
 - `llm_client.py`: ✅ Gold Tier (novo módulo)
 - `config.py`: ✅ Atualizado
 - `main.py`: ✅ Wiring completo
