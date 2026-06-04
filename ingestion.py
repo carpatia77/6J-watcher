@@ -46,17 +46,7 @@ class IngestionService:
             c.behavior_signature = self.engine.classify(c)
             clusters.append(c)
 
-        # Feed matrix with DOM, tape, and pre-built clusters
-        self.matrix.build_from_events(tape, dom, clusters=clusters)
-
-        # Post-classify recurring levels
-        hotspots = self.matrix.hotspots(self.cfg.min_occurrences)
-        for h in hotspots:
-            level_clusters = self.matrix.active_levels.get(h["price"], [])
-            refined = self.engine.post_classify(h["price"], level_clusters)
-            for c in level_clusters:
-                c.behavior_signature = refined
-
+        # Persist first — only committed data should drive analysis
         self.repo.begin()
         try:
             self.repo.insert_tape_events(tape)
@@ -66,5 +56,16 @@ class IngestionService:
         except Exception:
             self.repo.rollback()
             raise
+
+        # Feed matrix with DOM, tape, and pre-built clusters (data is safe in DB)
+        self.matrix.build_from_events(tape, dom, clusters=clusters)
+
+        # Post-classify recurring levels (now based on persisted data)
+        hotspots = self.matrix.hotspots(self.cfg.min_occurrences)
+        for h in hotspots:
+            level_clusters = self.matrix.active_levels.get(h["price"], [])
+            refined = self.engine.post_classify(h["price"], level_clusters)
+            for c in level_clusters:
+                c.behavior_signature = refined
 
         return clusters
