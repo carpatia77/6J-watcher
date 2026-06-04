@@ -12,7 +12,9 @@ Outputs:
 """
 from datetime import datetime
 from typing import Dict, List, Optional
+import logging
 
+logger = logging.getLogger(__name__)
 
 class Narrator:
     def daily_report(
@@ -85,8 +87,10 @@ class Narrator:
 
     def level_summary(self, price_matrix: Dict) -> str:
         p = price_matrix
+        price = p.get('price')
+        price_str = f"{price:.5f}" if isinstance(price, (int, float)) else "?"
         lines = [
-            f"## Level {p.get('price', '?'):.5f}",
+            f"## Level {price_str}",
             f"- Clusters:   {p.get('cluster_count', 0)}",
             f"- Tape events:{p.get('tape_count', 0)}",
             f"- DOM levels: {p.get('dom_count', 0)}",

@@ -24,7 +24,7 @@ from repository_duckdb import DuckDBRepository
 cfg     = Config()
 repo    = DuckDBRepository(cfg.db_path)
 matrix  = LiquidityMatrix(cfg.symbol, cfg.tick_size)
-engine  = AdaptivePatternEngine(profile_path=str(BASE_DIR / "profile.json"), tick_size=cfg.tick_size)
+engine  = AdaptivePatternEngine(profile_path=str(BASE_DIR / "profile.json"))
 narrator = Narrator()
 service = IngestionService(repo, matrix, engine, cfg)
 
