@@ -44,30 +44,21 @@ class SignatureProfiler:
         WITH cluster_excursions AS (
             SELECT 
                 c.timestamp,
-                c.price AS c_price,
-                c.delta_price_ticks,
                 c.behavior_signature,
                 c.session,
-                c.total_bid,
-                c.total_ask,
                 (c.total_bid + c.total_ask) AS total_vol,
                 ABS(c.total_bid - c.total_ask) AS imbalance,
-                COALESCE(MAX(t.price) OVER (
-                    PARTITION BY c.symbol 
-                    ORDER BY t.timestamp 
-                    RANGE BETWEEN CURRENT ROW AND {interval_clause} FOLLOWING
-                ), c.price) AS max_future_price,
-                COALESCE(MIN(t.price) OVER (
-                    PARTITION BY c.symbol 
-                    ORDER BY t.timestamp 
-                    RANGE BETWEEN CURRENT ROW AND {interval_clause} FOLLOWING
-                ), c.price) AS min_future_price
+                c.price AS c_price,
+                -- O GROUP BY garante 1 linha por cluster, agregando eventos na janela
+                COALESCE(MAX(t.price), c.price) AS max_future_price,
+                COALESCE(MIN(t.price), c.price) AS min_future_price
             FROM liquidity_clusters c
             LEFT JOIN tape_events t 
               ON c.symbol = t.symbol 
-             AND t.timestamp >= c.timestamp 
+             AND t.timestamp > c.timestamp 
              AND t.timestamp <= c.timestamp + {interval_clause}
             WHERE c.symbol = '{symbol}' AND c.timestamp > '{cutoff}'
+            GROUP BY c.timestamp, c.behavior_signature, c.session, c.total_bid, c.total_ask, c.price
         ),
         mfe_mae_calc AS (
             SELECT 
