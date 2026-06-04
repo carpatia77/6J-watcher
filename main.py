@@ -14,17 +14,17 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from config import Config
+from config import Config, BASE_DIR
 from ingestion import IngestionService
 from liquidity_matrix import LiquidityMatrix
 from narrator import Narrator
-from pattern_engine import PatternEngine
+from adaptive_pattern_engine import AdaptivePatternEngine
 from repository_duckdb import DuckDBRepository
 
 cfg     = Config()
 repo    = DuckDBRepository(cfg.db_path)
 matrix  = LiquidityMatrix(cfg.symbol, cfg.tick_size)
-engine  = PatternEngine()
+engine  = AdaptivePatternEngine(profile_path=str(BASE_DIR / "profile.json"), tick_size=cfg.tick_size)
 narrator = Narrator()
 service = IngestionService(repo, matrix, engine, cfg)
 

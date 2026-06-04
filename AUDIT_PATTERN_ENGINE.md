@@ -80,3 +80,6 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** O pipeline de ingestão foi atualizado para utilizar o novo `AdaptivePatternEngine`. A mudança arquitetural mais crítica (Decisão #3) foi a introdução do "Stateful Cursor" (`self.last_closed_price`).
 - **Motivo:** No ambiente Live Trading de alta frequência, é proibitivo consultar o banco de dados (DuckDB) apenas para descobrir o `delta_price_ticks`. A solução implementada introduziu um cursor de estado em memória que sobrevive às transições de batch e mantém registro do último preço executado, permitindo o cálculo do ΔP (deslocamento em ticks) localmente com complexidade O(1) sem overhead de I/O, antes de acionar a classificação.
 
+### Passo 6: Integração no Orquestrador (`main.py`)
+- **Ação:** Substituição da instância do antigo `PatternEngine` pela nova classe `AdaptivePatternEngine`. Configurada a inicialização passando o caminho absoluto do arquivo `profile.json` carregado a partir do `BASE_DIR` e injetando o `tick_size` via Configuração Global.
+
