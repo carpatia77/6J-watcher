@@ -138,19 +138,19 @@ class LiquidityMatrix:
         out = []
         with self.lock:
             for price, clusters in self.active_levels.items():
-            if len(clusters) < min_occurrences:
-                continue
-            sig = Counter(c.behavior_signature.value for c in clusters).most_common(1)[0][0]
-            out.append({
-                "price":              price,
-                "occurrences":        len(clusters),
-                "dominant_signature": sig,
-                "avg_confidence":     mean(c.confidence for c in clusters),
-                "total_bid":          sum(c.total_bid for c in clusters),
-                "total_ask":          sum(c.total_ask for c in clusters),
-                "first":              min(c.timestamp for c in clusters),
-                "last":               max(c.timestamp for c in clusters),
-            })
+                if len(clusters) < min_occurrences:
+                    continue
+                sig = Counter(c.behavior_signature.value for c in clusters).most_common(1)[0][0]
+                out.append({
+                    "price":              price,
+                    "occurrences":        len(clusters),
+                    "dominant_signature": sig,
+                    "avg_confidence":     mean(c.confidence for c in clusters),
+                    "total_bid":          sum(c.total_bid for c in clusters),
+                    "total_ask":          sum(c.total_ask for c in clusters),
+                    "first":              min(c.timestamp for c in clusters),
+                    "last":               max(c.timestamp for c in clusters),
+                })
         return sorted(out, key=lambda x: x["occurrences"], reverse=True)
 
     def prune_stale_data(self, hours: int = 4):
