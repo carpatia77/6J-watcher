@@ -63,6 +63,7 @@ class DuckDBRepository:
             cumdelta           INTEGER,
             deltamin           INTEGER,
             deltamax           INTEGER,
+            delta_price_ticks  INTEGER,
             confidence         DOUBLE,
             outcome            VARCHAR,
             raw_payload        TEXT
@@ -96,11 +97,11 @@ class DuckDBRepository:
         rows = [[
             c.symbol, c.timestamp, c.price, c.session,
             c.behavior_signature.value, c.total_ask, c.total_bid,
-            c.cumdelta, c.deltamin, c.deltamax,
+            c.cumdelta, c.deltamin, c.deltamax, c.delta_price_ticks,
             c.confidence, c.outcome, _j(c.raw_payload)
         ] for c in clusters]
         if rows:
-            self.conn.executemany("INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            self.conn.executemany("INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     def upsert_key_level(self, level: KeyLevel):
         self.conn.execute(

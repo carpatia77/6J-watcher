@@ -38,3 +38,9 @@ O core do repositório já se encontra ancorado em três pilares fundamentais, v
 ### 4. Ajuste de Consistência e Design de Schema (`batch_id`)
 - **Decisão Arquitetural:** O `batch_id` (introduzido no `models.py` para resolver ambiguidades e isolamento no loop do `ingestion.py`) não foi incluído no schema do banco de dados (tabela `liquidity_clusters`).
 - **Justificativa:** Essa ausência é estritamente proposital e reflete um bom design de dados. O `batch_id` é um identificador *transiente* e volátil (usado apenas em RAM para tracking de pipeline e rollbacks). Persisti-lo no DuckDB consumiria espaço em disco sem agregar nenhum valor analítico de longo prazo. A assimetria Modelo-Schema neste ponto é correta.
+
+## Correções da Auditoria (Iteração 2)
+
+### 1. Atualização do Schema (`liquidity_clusters`)
+- **Ação:** Adicionado o campo `delta_price_ticks INTEGER` no `CREATE TABLE` e atualizada a query `INSERT INTO` (de 13 para 14 parâmetros).
+- **Motivo:** Persistir em disco o deslocamento de preço real medido em memória (O(1)) durante a ingestão do cluster, abolindo de vez a necessidade de recorrer à ineficiente e falha função `LAG()` no SQL analítico do Profiler. A mudança consolida o banco como um *true sink* determinístico da pipeline online.
