@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
+import time
 
 
 class Side(str, Enum):
@@ -58,6 +59,7 @@ class LiquidityCluster:
     deltamax:           int   = 0
     confidence:         float = 0.5
     outcome:            Optional[str] = None
+    batch_id:           str = field(default_factory=lambda: f"{time.time_ns()}")
     raw_payload:        Dict[str, Any] = field(default_factory=dict)
 
     @property
