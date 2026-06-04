@@ -1,7 +1,8 @@
 import json
 from collections import Counter
-from typing import List, Dict
+from typing import List, Dict, Optional
 from models import BehaviorSignature, LiquidityCluster
+from config import Config
 
 class AdaptivePatternEngine:
     """
@@ -12,9 +13,10 @@ class AdaptivePatternEngine:
     TIER_2 = ["iceberg_accumulation", "iceberg_distribution", "magnet_effect"] # Contexto/Acumulação
     TIER_3 = ["spoofing_wall", "liquidity_vacuum"] # Filtros/Ruído (Geralmente descartados no live trading)
 
-    def __init__(self, profile_path: str = "profile.json", tick_size: float = 0.00005):
+    def __init__(self, profile_path: str = "profile.json", tick_size: Optional[float] = None, cfg: Optional[Config] = None):
+        self.cfg = cfg or Config()
         self.profile = self._load_profile(profile_path)
-        self.tick_size = tick_size
+        self.tick_size = tick_size or self.cfg.tick_size
 
     def _load_profile(self, path: str) -> dict:
         try:

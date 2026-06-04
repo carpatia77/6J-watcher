@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
+from typing import Optional
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +15,8 @@ class SignatureProfiler:
     Calcula MFE/MAE via DuckDB Window Functions e gera Tabelas de Percentis
     Empíricos para normalização não-paramétrica de Order Flow.
     """
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, cfg: Optional[Config] = None):
+        self.cfg = cfg or Config()
         self.db_path = db_path
         self.conn = duckdb.connect(db_path, read_only=True)
 
@@ -23,7 +26,7 @@ class SignatureProfiler:
         if 13 <= hour < 22: return "NEW_YORK"
         return "OFF_HOURS"
 
-    def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: float = 0.00005) -> dict:
+    def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: Optional[float] = None) -> dict:
         """
         Executa o pipeline de perfilamento empírico.
         Toda a agregação, percentis e regras direcionais rodam nativamente no motor C++ do DuckDB.
@@ -32,6 +35,7 @@ class SignatureProfiler:
         if not isinstance(horizon_minutes, int) or not (1 <= horizon_minutes <= 1440):
             raise ValueError("horizon_minutes must be an int between 1 and 1440")
             
+        tick_size = tick_size or self.cfg.tick_size
         interval_clause = f"INTERVAL '{horizon_minutes}' MINUTE"
         cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d %H:%M:%S')
         
