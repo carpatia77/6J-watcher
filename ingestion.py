@@ -29,12 +29,7 @@ class IngestionService:
         tape   = parse_tape_rows(tape_rows, symbol)
         dom    = parse_dom_rows(dom_rows, symbol)
 
-        # Persist raw events (moved inside transaction block at the end)
-
-        # Feed matrix with both streams (no classify here — single classify below)
-        self.matrix.build_from_events(tape, dom)
-
-        # Build clusters from tape and classify
+        # Build clusters from tape — single source of truth
         clusters: List[LiquidityCluster] = []
         for e in tape:
             session = self.cfg.session_for(e.timestamp.hour)
@@ -50,6 +45,9 @@ class IngestionService:
             )
             c.behavior_signature = self.engine.classify(c)
             clusters.append(c)
+
+        # Feed matrix with DOM, tape, and pre-built clusters
+        self.matrix.build_from_events(tape, dom, clusters=clusters)
 
         # Post-classify recurring levels
         hotspots = self.matrix.hotspots(self.cfg.min_occurrences)

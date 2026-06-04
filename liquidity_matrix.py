@@ -3,7 +3,7 @@ from collections import defaultdict, Counter
 from datetime import datetime
 from statistics import mean
 import threading
-from typing import Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 from models import BehaviorSignature, DOMLevel, LiquidityCluster, TapeEvent
 
 
@@ -46,25 +46,17 @@ class LiquidityMatrix:
         self,
         tape_events: List[TapeEvent],
         dom_levels:  List[DOMLevel],
-        classify:    Optional[Callable] = None,
+        clusters:    Optional[List[LiquidityCluster]] = None,
     ):
         for dom in dom_levels:
             self.ingest_dom(dom)
 
         for tape in tape_events:
             self.ingest_tape(tape)
-            cluster = LiquidityCluster(
-                symbol    = tape.symbol,
-                timestamp = tape.timestamp,
-                price     = tape.price,
-                total_bid = tape.volume if tape.side.value == "buy"  else 0,
-                total_ask = tape.volume if tape.side.value == "sell" else 0,
-                cumdelta  = tape.volume if tape.side.value == "buy"  else -tape.volume,
-                raw_payload = tape.raw,
-            )
-            if classify:
-                cluster.behavior_signature = classify(cluster)
-            self.ingest_cluster(cluster)
+
+        if clusters:
+            for cluster in clusters:
+                self.ingest_cluster(cluster)
 
     def get_price_matrix(self, price: float) -> Dict:
         p        = self.normalize_price(price)
