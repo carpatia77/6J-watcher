@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from time import time as _time
 from typing import Dict, List, Optional, Tuple
@@ -37,6 +38,7 @@ class Narrator:
         self.cfg = cfg or Config()
         self.llm_client = llm_client  # Optional — graceful degradation se None
         self._report_cache: Dict[str, Tuple[str, float]] = {}  # (report, timestamp)
+        self._cache_lock = threading.Lock()
 
         # Validação defensiva de atributos críticos do Config
         _required = {
@@ -194,26 +196,51 @@ class Narrator:
         notable_events: Optional[List[Dict]] = None,
     ) -> str:
         """Gera relatório Markdown com hotspots, confluências, distribuição e sessão."""
+        # Validação defensiva de inputs
+        if not isinstance(symbol, str):
+            logger.warning(f"[Narrator] symbol não é string: {type(symbol)}")
+            symbol = str(symbol)
+        
+        if not isinstance(hotspots, list):
+            logger.warning(f"[Narrator] hotspots não é lista: {type(hotspots)}")
+            hotspots = []
+            
+        if not isinstance(signature_distribution, list):
+            logger.warning(f"[Narrator] signature_distribution não é lista: {type(signature_distribution)}")
+            signature_distribution = []
+            
+        if not isinstance(session_analysis, dict):
+            logger.warning(f"[Narrator] session_analysis não é dict: {type(session_analysis)}")
+            session_analysis = {}
+            
         notable_events = notable_events or []
+        if not isinstance(notable_events, list):
+            logger.warning(f"[Narrator] notable_events não é lista: {type(notable_events)}")
+            notable_events = []
 
         # --- P2: Cache com TTL ---
         cache_key = self._compute_cache_key(
             symbol, hotspots, signature_distribution, session_analysis, notable_events
         )
 
-        if cache_key in self._report_cache:
-            cached_report, cached_time = self._report_cache[cache_key]
-            if _time() - cached_time < self.CACHE_TTL_SECONDS:
-                logger.debug("[Narrator] Cache hit para daily_report")
-                return cached_report
-            else:
-                logger.debug("[Narrator] Cache expirado, regenerando")
-                del self._report_cache[cache_key]
+        with self._cache_lock:
+            if cache_key in self._report_cache:
+                cached_report, cached_time = self._report_cache[cache_key]
+                if _time() - cached_time < self.CACHE_TTL_SECONDS:
+                    logger.debug("[Narrator] Cache hit para daily_report")
+                    return cached_report
+                else:
+                    logger.debug("[Narrator] Cache expirado, regenerando")
+                    del self._report_cache[cache_key]
 
+        # Gera fora do lock para não bloquear outras threads
         report = self._generate_report(
             symbol, hotspots, signature_distribution, session_analysis, notable_events
         )
-        self._report_cache[cache_key] = (report, _time())
+        
+        with self._cache_lock:
+            self._report_cache[cache_key] = (report, _time())
+            
         return report
 
     def _compute_cache_key(
@@ -221,20 +248,38 @@ class Narrator:
         signature_distribution: List, session_analysis: Dict,
         notable_events: List[Dict],
     ) -> str:
-        """Gera cache key baseado no CONTEÚDO, não apenas no tamanho."""
-        hotspots_sorted = sorted(hotspots, key=lambda h: h.get("price", 0))
+        """Gera cache key baseado em campos-chave (mais rápido que JSON completo)."""
+        hotspots_sig = [
+            f"{h.get('price', 0):.5f}:{h.get('dominant_signature', '')}:{h.get('occurrences', 0)}"
+            for h in sorted(hotspots, key=lambda h: h.get('price', 0))
+        ]
+        
+        sig_dist_sig = [f"{row[0]}:{row[1]}" for row in signature_distribution]
+        
+        session_sig = [
+            f"{session}:{sig}:{cnt}"
+            for session, sigs in session_analysis.items()
+            for sig, cnt in sigs.items()
+        ]
+        
+        notable_sig = [
+            f"{e.get('price', '')}:{e.get('signature', '')}" if isinstance(e, dict) else str(e)
+            for e in notable_events
+        ]
+        
         payload = (
             f"{symbol}|"
-            f"{json.dumps(hotspots_sorted, sort_keys=True, default=str)}|"
-            f"{json.dumps(signature_distribution, sort_keys=True, default=str)}|"
-            f"{json.dumps(session_analysis, sort_keys=True, default=str)}|"
-            f"{json.dumps(notable_events, sort_keys=True, default=str)}"
+            f"{'|'.join(hotspots_sig)}|"
+            f"{'|'.join(sig_dist_sig)}|"
+            f"{'|'.join(session_sig)}|"
+            f"{'|'.join(notable_sig)}"
         )
         return hashlib.md5(payload.encode()).hexdigest()
 
     def invalidate_cache(self):
         """Limpa cache quando novos dados chegam via ingest_batch."""
-        self._report_cache.clear()
+        with self._cache_lock:
+            self._report_cache.clear()
 
     def _generate_report(
         self,
