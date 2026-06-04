@@ -109,3 +109,7 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** Inserida trava de validação (`isinstance(horizon_minutes, int)`) e formatado com limite máximo de 1440 minutos. A query utiliza variável local formatada invés da interpolação direta na string multi-line.
 - **Motivo:** Boas práticas de segurança em montagem de strings SQL no Python, blindando o DuckDB contra vetores f-string em cláusulas `INTERVAL`.
 
+### Melhoria de Engenharia 2: Documentação de Limitação de Memória (`signature_profiler.py`)
+- **Ação:** Documentado na docstring de `build_profile` o risco inerente do uso atual de `.fetchdf()`.
+- **Motivo:** O `.fetchdf()` carrega todos os milhões de linhas num DataFrame Pandas em RAM. Para um símbolo e um horizonte de 30 dias de *tick data* (condição nominal), é a forma mais ágil de processamento. Contudo, em projeções de _Big Data_ futuras, o motor não escalará horizontalmente para anos de dados sem OOM (Out-of-Memory). A alternativa para o futuro (chunks via `.fetchmany()` + streaming percentiles/T-Digest) agora está registrada na documentação para não pegar os desenvolvedores de surpresa.
+

@@ -24,6 +24,14 @@ class SignatureProfiler:
         return "OFF_HOURS"
 
     def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: float = 0.00005) -> dict:
+        """
+        Executa o pipeline de perfilamento empírico.
+        Nota sobre Memória (Limitação de Design): 
+        O uso atual de `.fetchdf()` carrega todo o result set na memória RAM para o Pandas. 
+        Para lookback_days padrão (ex: 30) de 1 único ativo, isso é aceitável e performático. 
+        Contudo, para expansões (múltiplos símbolos ou 1 ano de histórico de tape), isso poderá engatilhar um Out-Of-Memory (OOM). 
+        Futuras otimizações podem requerer streaming processing via chunks (`fetchmany`) e percentis aproximados (T-Digest).
+        """
         if not isinstance(horizon_minutes, int) or not (1 <= horizon_minutes <= 1440):
             raise ValueError("horizon_minutes must be an int between 1 and 1440")
             
