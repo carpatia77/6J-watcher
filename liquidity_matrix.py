@@ -155,28 +155,25 @@ class LiquidityMatrix:
 
     def prune_stale_data(self, hours: int = 4):
         import datetime as dt
-        cutoff = dt.datetime.utcnow() - dt.timedelta(hours=hours)
+        cutoff_str = (dt.datetime.utcnow() - dt.timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M")
         with self.lock:
             for p in list(self.matrix.keys()):
                 for t in list(self.matrix[p].keys()):
-                    bucket_ts = dt.datetime.strptime(t, "%Y-%m-%d %H:%M")
-                    if bucket_ts < cutoff:
+                    if t < cutoff_str:
                         del self.matrix[p][t]
                 if not self.matrix[p]:
                     del self.matrix[p]
 
             for p in list(self.dom_snapshots.keys()):
                 for t in list(self.dom_snapshots[p].keys()):
-                    bucket_ts = dt.datetime.strptime(t, "%Y-%m-%d %H:%M")
-                    if bucket_ts < cutoff:
+                    if t < cutoff_str:
                         del self.dom_snapshots[p][t]
                 if not self.dom_snapshots[p]:
                     del self.dom_snapshots[p]
 
             for p in list(self.tape_index.keys()):
                 for t in list(self.tape_index[p].keys()):
-                    bucket_ts = dt.datetime.strptime(t, "%Y-%m-%d %H:%M")
-                    if bucket_ts < cutoff:
+                    if t < cutoff_str:
                         del self.tape_index[p][t]
                 if not self.tape_index[p]:
                     del self.tape_index[p]
