@@ -15,17 +15,18 @@ from typing import Dict, List
 from config import Config
 from models import LiquidityCluster
 from parser_tsdom import parse_tape_rows, parse_dom_rows
-from pattern_engine import PatternEngine
+from adaptive_pattern_engine import AdaptivePatternEngine
 from liquidity_matrix import LiquidityMatrix
 from repository_duckdb import DuckDBRepository
 
 
 class IngestionService:
-    def __init__(self, repo: DuckDBRepository, matrix: LiquidityMatrix, engine: PatternEngine, cfg: Config):
+    def __init__(self, repo: DuckDBRepository, matrix: LiquidityMatrix, engine: AdaptivePatternEngine, cfg: Config):
         self.repo   = repo
         self.matrix = matrix
         self.engine = engine
         self.cfg    = cfg
+        self.last_closed_price = None
 
     def ingest_batch(self, tape_rows: List[Dict], dom_rows: List[Dict], symbol: str) -> List[LiquidityCluster]:
         tape   = parse_tape_rows(tape_rows, symbol)
@@ -54,6 +55,12 @@ class IngestionService:
         batch_id = str(time.time_ns())
         for e in tape:
             session = self.cfg.session_for(e.timestamp.hour)
+            
+            if self.last_closed_price is not None:
+                dp = round((e.price - self.last_closed_price) / self.cfg.tick_size)
+            else:
+                dp = 0
+
             c = LiquidityCluster(
                 symbol    = symbol,
                 timestamp = e.timestamp,
@@ -65,8 +72,9 @@ class IngestionService:
                 batch_id  = batch_id,
                 raw_payload = e.raw,
             )
-            c.behavior_signature = self.engine.classify(c)
+            c.behavior_signature = self.engine.classify(c, delta_price_ticks=dp)
             clusters.append(c)
+            self.last_closed_price = e.price
 
         # Persist first — only committed data should drive analysis
         self.repo.begin()

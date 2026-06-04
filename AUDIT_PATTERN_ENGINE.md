@@ -76,3 +76,7 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
   2. Implementado fallback de thresholds estáticos que abrange todas as quatro sessões (ASIAN, LONDON, NEW_YORK, OFF_HOURS) como contramedida de robustez.
   3. Lógica do `post_classify` corrigida. Antes o código interceptava clusters de forma não intencional gerando dead-code. Agora ele avalia a predominância primeiro e aplica MAGNET_EFFECT como elevação de prioridade quando aplicável.
 
+### Passo 5: Atualização do Ingestion Pipeline (`ingestion.py`)
+- **Ação:** O pipeline de ingestão foi atualizado para utilizar o novo `AdaptivePatternEngine`. A mudança arquitetural mais crítica (Decisão #3) foi a introdução do "Stateful Cursor" (`self.last_closed_price`).
+- **Motivo:** No ambiente Live Trading de alta frequência, é proibitivo consultar o banco de dados (DuckDB) apenas para descobrir o `delta_price_ticks`. A solução implementada introduziu um cursor de estado em memória que sobrevive às transições de batch e mantém registro do último preço executado, permitindo o cálculo do ΔP (deslocamento em ticks) localmente com complexidade O(1) sem overhead de I/O, antes de acionar a classificação.
+
