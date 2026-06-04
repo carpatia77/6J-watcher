@@ -32,7 +32,6 @@ class DuckDBRepository:
         self.conn.execute("ROLLBACK")
 
     def _init_schema(self):
-        self.conn.executemany("", [])  # warm-up
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS tape_events (
             symbol    VARCHAR,

@@ -26,3 +26,7 @@ O core do repositório já se encontra ancorado em três pilares fundamentais, v
 ### 1. Atomicidade no Upsert de Key Levels
 - **Problema:** O método `upsert_key_level` executava duas operações não-atômicas sequenciais (`DELETE` seguido de `INSERT`), o que abria brechas para condições de corrida (Race Conditions) e gerava overhead no banco ao forçar duas passagens distintas pela árvore de índices.
 - **Solução:** A tabela `key_levels` (em `_init_schema`) recebeu a restrição formal `PRIMARY KEY (symbol, price)`. A dupla query foi extirpada e substituída por uma operação transacional O(1) unificada através de `INSERT INTO ... ON CONFLICT DO UPDATE SET`, encapsulando a mutação num único bloco atômico no engine DuckDB.
+
+### 2. Remoção de Artefatos Incompatíveis (Warm-up)
+- **Problema:** O método `_init_schema` executava uma query nula `self.conn.executemany("", [])` com o intuito de fazer "warm-up" na conexão. Esse é um padrão legado (comum em pools antigos de banco de dados) que o motor colunar do DuckDB não exige. O uso de queries vazias poderia causar exceções em versões futuras ou comportamentos imprevisíveis.
+- **Solução:** A linha inútil foi completamente removida. O DuckDB inicializa a base e a conexão no momento do `.connect()` e processa os `CREATE TABLE` imediatamente sem necessidade de pré-aquecimento.
