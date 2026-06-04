@@ -25,3 +25,11 @@ Este documento registra como um Architecture Decision Record (ADR) as decisões 
 ### 5. Correções Literais de Indentação (SyntaxError)
 - **Problema:** Um erro clássico em blocos `for` provocava interrupção letal (Crash/IndentationError) porque lógicas de filtragem em `hotspots()` estavam soltas na hierarquia Python.
 - **Solução:** Reposicionamento arquitetural do bloco (indentando-se para o subnível correto no contexto transacional). O erro silencioso foi removido.
+
+### 6. Otimização de Performance O(1) no Pruning de Dados
+- **Problema:** O método `prune_stale_data` realizava o parse reverso das chaves de tempo (`t`) convertendo milhares de strings para objetos `datetime` via `strptime` a cada 30 segundos, causando desperdício excessivo de CPU.
+- **Solução:** A conversão foi invertida. O limite cronológico (`cutoff_ts`) agora é pré-formatado em uma única string (`cutoff_str`). A verificação dentro dos loops iterativos passou a usar uma simples comparação lexicográfica de strings (`if t < cutoff_str:`), reduzindo uma operação custosa de parsing para uma operação O(1) atômica do CPython.
+
+### 7. Refatoração In-Place O(N) para `active_levels`
+- **Problema:** Após expurgar as chaves de tempo antigas, a matriz usava `self.active_levels.clear()` e iterava sob a estrutura recursiva completa para readicionar os clusters sobreviventes, causando um overhead logístico em O(N*M).
+- **Solução:** O algoritmo foi otimizado para atuar in-place (direto na memória). Ao invés de reconstruir do zero através das hierarquias antigas, o código passa as listas de `active_levels` em um *List Comprehension* filtrando-as nativamente pela condição `c.timestamp >= cutoff_ts`. O(N).
