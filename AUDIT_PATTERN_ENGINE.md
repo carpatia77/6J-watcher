@@ -69,3 +69,10 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
   2. Implementado a função `LAG()` no SQL para assegurar o cálculo histórico de `delta_price_ticks`, vital para paridade de dados entre backtest e o pipeline de Ingestão em memória.
   3. O print foi substituído por chamadas ao módulo interno `logging`.
 
+### Passo 4: Criação do Classificador Online (`adaptive_pattern_engine.py`)
+- **Ação:** Implementação do Módulo B da arquitetura V2. Este módulo efetua inferência em O(1) através de rank lookup no `profile.json` carregado em memória. O classificador agora obriga o envio do `delta_price_ticks`.
+- **Ajustes Aplicados em relação ao Manifesto Original:**
+  1. Corrigidas as constantes `TIER` para utilizarem strings em lowercase, permitindo o correto cruzamento com `BehaviorSignature.value` no método `get_signal_quality()`.
+  2. Implementado fallback de thresholds estáticos que abrange todas as quatro sessões (ASIAN, LONDON, NEW_YORK, OFF_HOURS) como contramedida de robustez.
+  3. Lógica do `post_classify` corrigida. Antes o código interceptava clusters de forma não intencional gerando dead-code. Agora ele avalia a predominância primeiro e aplica MAGNET_EFFECT como elevação de prioridade quando aplicável.
+
