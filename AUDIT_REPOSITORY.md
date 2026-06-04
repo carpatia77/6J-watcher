@@ -21,6 +21,8 @@ O core do repositório já se encontra ancorado em três pilares fundamentais, v
 - **Implementação:** As tabelas lógicas mapeiam as instâncias do sistema de forma bidirecional (Tape, DOM, Clusters, Key Levels).
 - **Justificativa:** Permite varreduras analíticas em background e recuperação integral do estado sistêmico sem corromper as abstrações de dados nativas de cada tipo de evento.
 
----
+## Otimizações Aplicadas (Auditoria Ativa)
 
-*(Este documento será expandido com os próximos passos da auditoria assim que as otimizações adicionais forem processadas).*
+### 1. Atomicidade no Upsert de Key Levels
+- **Problema:** O método `upsert_key_level` executava duas operações não-atômicas sequenciais (`DELETE` seguido de `INSERT`), o que abria brechas para condições de corrida (Race Conditions) e gerava overhead no banco ao forçar duas passagens distintas pela árvore de índices.
+- **Solução:** A tabela `key_levels` (em `_init_schema`) recebeu a restrição formal `PRIMARY KEY (symbol, price)`. A dupla query foi extirpada e substituída por uma operação transacional O(1) unificada através de `INSERT INTO ... ON CONFLICT DO UPDATE SET`, encapsulando a mutação num único bloco atômico no engine DuckDB.
