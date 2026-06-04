@@ -87,3 +87,9 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** O arquivo `pattern_engine.py` recebeu um header de deprecação (`# DEPRECATED — replaced by adaptive_pattern_engine.py (V2)`).
 - **Motivo:** Conforme a Decisão #1, em vez de deletar o arquivo e correr o risco de quebrar dependências de commits antigos (git history), o arquivo é mantido congelado para preservar a timeline evolutiva e servir de referência histórica do baseline heurístico do projeto. Não deve ser invocado em código novo.
 
+## Correções da Auditoria (Iteração 2)
+
+### Correção 1: Adição de `delta_price_ticks` no Modelo (`models.py`)
+- **Ação:** Adicionado o atributo `delta_price_ticks: int = 0` na dataclass `LiquidityCluster`.
+- **Motivo:** Solucionar a falha semântica do `LAG()` no Profiler. Em vez de deduzir o delta a partir de consultas SQL lentas e imprecisas, o delta exato calculado em O(1) pelo Ingestion Service será transportado no próprio objeto de cluster e persistido nativamente.
+
