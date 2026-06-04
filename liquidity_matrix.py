@@ -153,7 +153,8 @@ class LiquidityMatrix:
         return sorted(out, key=lambda x: x["occurrences"], reverse=True)
 
     def prune_stale_data(self, hours: int = 4):
-        cutoff_str = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M")
+        cutoff_ts = datetime.utcnow() - timedelta(hours=hours)
+        cutoff_str = cutoff_ts.strftime("%Y-%m-%d %H:%M")
         with self.lock:
             for p in list(self.matrix.keys()):
                 for t in list(self.matrix[p].keys()):
@@ -176,7 +177,7 @@ class LiquidityMatrix:
                 if not self.tape_index[p]:
                     del self.tape_index[p]
 
-            self.active_levels.clear()
-            for p, buckets in self.matrix.items():
-                for t, clusters in buckets.items():
-                    self.active_levels[p].extend(clusters)
+            for p in list(self.active_levels.keys()):
+                self.active_levels[p] = [c for c in self.active_levels[p] if c.timestamp >= cutoff_ts]
+                if not self.active_levels[p]:
+                    del self.active_levels[p]
