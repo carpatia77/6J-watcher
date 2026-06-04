@@ -41,6 +41,13 @@ class IngestionService:
         if not tape:
             return []  # nada a processar — payload vazio legítimo
 
+        if dom_rows and not dom:
+            logging.warning(
+                "[ingest_batch] %d dom_rows recebidas mas nenhuma parseada com sucesso "
+                "(symbol=%s) — DOM sensor pode estar offline.",
+                len(dom_rows), symbol,
+            )
+
         # Build clusters from tape — single source of truth
         clusters: List[LiquidityCluster] = []
         import time
