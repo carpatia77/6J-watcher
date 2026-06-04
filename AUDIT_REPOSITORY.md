@@ -34,3 +34,7 @@ O core do repositório já se encontra ancorado em três pilares fundamentais, v
 ### 3. Precisão Estatística em `recurring_levels` (ANY_VALUE vs MODE)
 - **Problema:** A query `recurring_levels` usava `ANY_VALUE(behavior_signature) dominant` para tentar extrair a assinatura de comportamento principal de um nível de preço. No entanto, `ANY_VALUE` é não-determinístico e retorna uma assinatura aleatória do grupo, gerando falsos positivos na identificação de perfis institucionais.
 - **Solução:** A query foi corrigida para utilizar a função agregadora estatística `MODE(behavior_signature)`. O DuckDB suporta o `MODE()` nativamente, o que garante matematicamente o retorno da assinatura que apareceu com a maior frequência (moda estatística) naquele bloco de preço, mantendo a performance da query sem a necessidade de CTEs complexas.
+
+### 4. Ajuste de Consistência e Design de Schema (`batch_id`)
+- **Decisão Arquitetural:** O `batch_id` (introduzido no `models.py` para resolver ambiguidades e isolamento no loop do `ingestion.py`) não foi incluído no schema do banco de dados (tabela `liquidity_clusters`).
+- **Justificativa:** Essa ausência é estritamente proposital e reflete um bom design de dados. O `batch_id` é um identificador *transiente* e volátil (usado apenas em RAM para tracking de pipeline e rollbacks). Persisti-lo no DuckDB consumiria espaço em disco sem agregar nenhum valor analítico de longo prazo. A assimetria Modelo-Schema neste ponto é correta.
