@@ -43,6 +43,8 @@ class IngestionService:
 
         # Build clusters from tape — single source of truth
         clusters: List[LiquidityCluster] = []
+        import time
+        batch_id = str(time.time_ns())
         for e in tape:
             session = self.cfg.session_for(e.timestamp.hour)
             c = LiquidityCluster(
@@ -53,6 +55,7 @@ class IngestionService:
                 total_bid = e.volume if e.side.value == "buy"  else 0,
                 total_ask = e.volume if e.side.value == "sell" else 0,
                 cumdelta  = e.volume if e.side.value == "buy"  else -e.volume,
+                batch_id  = batch_id,
                 raw_payload = e.raw,
             )
             c.behavior_signature = self.engine.classify(c)
