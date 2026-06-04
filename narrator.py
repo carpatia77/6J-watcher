@@ -196,7 +196,7 @@ class Narrator:
 
         # --- P2: Cache com TTL ---
         cache_key = self._compute_cache_key(
-            symbol, hotspots, signature_distribution, session_analysis
+            symbol, hotspots, signature_distribution, session_analysis, notable_events
         )
 
         if cache_key in self._report_cache:
@@ -217,6 +217,7 @@ class Narrator:
     def _compute_cache_key(
         self, symbol: str, hotspots: List[Dict],
         signature_distribution: List, session_analysis: Dict,
+        notable_events: List[Dict],
     ) -> str:
         """Gera cache key baseado no CONTEÚDO, não apenas no tamanho."""
         hotspots_sorted = sorted(hotspots, key=lambda h: h.get("price", 0))
@@ -224,7 +225,8 @@ class Narrator:
             f"{symbol}|"
             f"{json.dumps(hotspots_sorted, sort_keys=True, default=str)}|"
             f"{json.dumps(signature_distribution, sort_keys=True, default=str)}|"
-            f"{json.dumps(session_analysis, sort_keys=True, default=str)}"
+            f"{json.dumps(session_analysis, sort_keys=True, default=str)}|"
+            f"{json.dumps(notable_events, sort_keys=True, default=str)}"
         )
         return hashlib.md5(payload.encode()).hexdigest()
 
