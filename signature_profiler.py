@@ -57,7 +57,7 @@ class SignatureProfiler:
               ON c.symbol = t.symbol 
              AND t.timestamp > c.timestamp 
              AND t.timestamp <= c.timestamp + {interval_clause}
-            WHERE c.symbol = '{symbol}' AND c.timestamp > '{cutoff}'
+            WHERE c.symbol = ? AND c.timestamp > ?
             GROUP BY c.timestamp, c.behavior_signature, c.session, c.total_bid, c.total_ask, c.price
         ),
         mfe_mae_calc AS (
@@ -81,7 +81,7 @@ class SignatureProfiler:
         """
         
         try:
-            base_rel = self.conn.sql(base_query)
+            base_rel = self.conn.execute(base_query, [symbol, cutoff])
             
             sig_query = """
                 SELECT 

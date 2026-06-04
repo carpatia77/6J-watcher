@@ -125,3 +125,7 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** Refatorada a chamada subsequente das views de `self.conn.sql(...)` com a diretiva `FROM rel` para a chamada matricial direta `base_rel.query("base_result", ...)`.
 - **Motivo:** Um objeto do tipo `DuckDBPyRelation` instanciado no script Python não se auto-inscreve magicamente no *Catalog* do banco de dados (o que gerava o erro `Catalog Error: Table with name rel does not exist!`). O uso da API nativa `.query("alias_name", ...)` garante que o DuckDB enxergue o ponteiro virtual de memória e possa compilar as views agregadas (`sig_query` e `perc_query`) diretamente por cima da árvore relacional do CTE base, sem falhas de escopo.
 
+### Melhoria de Engenharia 4: Prevenção de SQL Injection (F-Strings `signature_profiler.py`)
+- **Ação:** Remoção das injeções de string direta (`'{symbol}'` e `'{cutoff}'`) da cláusula `WHERE` da query analítica, trocando-as pelos marcadores nativos (`?`). A execução de `self.conn.execute()` agora passa a lista de parâmetros validada `[symbol, cutoff]`.
+- **Motivo:** Padronização institucional de cibersegurança. Embora os inputs locais fossem formatados pelo datetime, expor parâmetros em f-strings num banco de dados abre brechas teóricas para injeção e falhas de escape de aspas, solucionadas usando as binds nativas C++ da API do DuckDB.
+
