@@ -52,6 +52,9 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 | `requirements.txt` | BAIXO | Adição de `numpy` e `pandas`. |
 | `config.py` | BAIXO | Padronização de sessões para UPPERCASE (pendente aprovação). |
 
----
+## Log de Execução da Migração
 
-*(Este documento será expandido com os registros de cada correção aplicada durante a implementação).*
+### Passo 1: Padronização de Sessões (`config.py`)
+- **Ação:** Modificação das chaves do dicionário `session_utc` de minúsculas para maiúsculas (`ASIAN`, `LONDON`, `NEW_YORK`).
+- **Motivo:** O `signature_profiler` e o `adaptive_pattern_engine` utilizam strings UPPERCASE nativamente e as chaves do `profile.json` são exportadas dessa forma. A padronização no `config.py` evita divergências e operações de fallback ou lookup inválidas quando o engine for consultar o `thresholds[session]`.
+

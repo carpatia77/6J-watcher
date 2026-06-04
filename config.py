@@ -13,9 +13,9 @@ class Config:
     port:            int   = 8765
     min_occurrences: int   = 3
     session_utc: dict = field(default_factory=lambda: {
-        "asian":    (0,  8),
-        "london":   (8,  13),
-        "new_york": (13, 22),
+        "ASIAN":    (0,  8),
+        "LONDON":   (8,  13),
+        "NEW_YORK": (13, 22),
     })
 
     def session_for(self, hour_utc: int) -> str:
