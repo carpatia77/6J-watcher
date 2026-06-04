@@ -58,14 +58,20 @@ class IngestionService:
             raise
 
         # Feed matrix with DOM, tape, and pre-built clusters (data is safe in DB)
-        self.matrix.build_from_events(tape, dom, clusters=clusters)
+        # Snapshot first so we can rollback the matrix if anything fails
+        snap = self.matrix.snapshot()
+        try:
+            self.matrix.build_from_events(tape, dom, clusters=clusters)
 
-        # Post-classify recurring levels (now based on persisted data)
-        hotspots = self.matrix.hotspots(self.cfg.min_occurrences)
-        for h in hotspots:
-            level_clusters = self.matrix.active_levels.get(h["price"], [])
-            refined = self.engine.post_classify(h["price"], level_clusters)
-            for c in level_clusters:
-                c.behavior_signature = refined
+            # Post-classify recurring levels (now based on persisted data)
+            hotspots = self.matrix.hotspots(self.cfg.min_occurrences)
+            for h in hotspots:
+                level_clusters = self.matrix.active_levels.get(h["price"], [])
+                refined = self.engine.post_classify(h["price"], level_clusters)
+                for c in level_clusters:
+                    c.behavior_signature = refined
+        except Exception:
+            self.matrix.restore(snap)
+            raise
 
         return clusters

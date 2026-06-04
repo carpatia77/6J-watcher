@@ -2,6 +2,7 @@ from __future__ import annotations
 from collections import defaultdict, Counter
 from datetime import datetime
 from statistics import mean
+import copy
 import threading
 from typing import Dict, List, Optional
 from models import BehaviorSignature, DOMLevel, LiquidityCluster, TapeEvent
@@ -16,6 +17,42 @@ class LiquidityMatrix:
         self.tape_index:    Dict[float, Dict[str, List[TapeEvent]]]        = defaultdict(lambda: defaultdict(list))
         self.active_levels: Dict[float, List[LiquidityCluster]]            = defaultdict(list)
         self.lock = threading.RLock()
+
+    def snapshot(self) -> Dict:
+        """Capture list lengths so we can truncate back on restore."""
+        with self.lock:
+            return {
+                "matrix":        {p: {t: len(lst) for t, lst in buckets.items()} for p, buckets in self.matrix.items()},
+                "dom_snapshots": {p: {t: len(lst) for t, lst in buckets.items()} for p, buckets in self.dom_snapshots.items()},
+                "tape_index":    {p: {t: len(lst) for t, lst in buckets.items()} for p, buckets in self.tape_index.items()},
+                "active_levels": {p: len(lst) for p, lst in self.active_levels.items()},
+            }
+
+    def restore(self, snap: Dict):
+        """Truncate lists back to snapshot lengths, removing anything added after."""
+        with self.lock:
+            for store, name in [
+                (self.matrix, "matrix"),
+                (self.dom_snapshots, "dom_snapshots"),
+                (self.tape_index, "tape_index"),
+            ]:
+                snap_store = snap[name]
+                for p in list(store.keys()):
+                    if p not in snap_store:
+                        del store[p]
+                        continue
+                    for t in list(store[p].keys()):
+                        if t not in snap_store[p]:
+                            del store[p][t]
+                        else:
+                            store[p][t] = store[p][t][:snap_store[p][t]]
+
+            snap_al = snap["active_levels"]
+            for p in list(self.active_levels.keys()):
+                if p not in snap_al:
+                    del self.active_levels[p]
+                else:
+                    self.active_levels[p] = self.active_levels[p][:snap_al[p]]
 
     def normalize_price(self, price: float) -> float:
         return round(price / self.tick_size) * self.tick_size
