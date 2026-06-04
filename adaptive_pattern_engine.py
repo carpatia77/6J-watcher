@@ -49,10 +49,10 @@ class AdaptivePatternEngine:
                 return p
         return 0
 
-    def classify(self, cluster: LiquidityCluster, delta_price_ticks: int = 0) -> BehaviorSignature:
+    def classify(self, cluster: LiquidityCluster) -> BehaviorSignature:
         """
         Classificação baseada em Microestrutura Real.
-        delta_price_ticks: Quantos ticks o preço andou durante a formação deste cluster.
+        Usa cluster.delta_price_ticks (calculado pelo IngestionService via Stateful Cursor O(1)).
         """
         session = self._get_session(cluster.timestamp.hour)
         stats = self.profile.get("thresholds", {}).get(session, {})
@@ -62,43 +62,51 @@ class AdaptivePatternEngine:
 
         vol_p = self._get_percentile_rank(cluster.total_bid + cluster.total_ask, stats.get("vol_percentiles", {}))
         imb_p = self._get_percentile_rank(abs(cluster.total_bid - cluster.total_ask), stats.get("imb_percentiles", {}))
+        delta = cluster.delta_price_ticks
         
-        is_buy_pressure = cluster.total_bid > cluster.total_ask # Agressão de compra (hit ask)
+        # Agressão de compra = agressores batem no ASK (BID volume domina)
+        is_buy_pressure = cluster.total_bid > cluster.total_ask
         
-        # --- SEMÂNTICA DE MICROESTRUTURA CORRIGIDA ---
+        # --- SEMÂNTICA DE MICROESTRUTURA ---
 
         # 1. ABSORPTION PASSIVE (Tier 1)
-        # Definição: Agressão extrema (Imbalance > p90), Volume Alto (> p90), mas o preço NÃO ANDA (delta <= 1 tick).
-        # Significa que há um Iceberg Passivo limitando o preço e absorvendo toda a agressão.
-        if vol_p >= 90 and imb_p >= 90 and abs(delta_price_ticks) <= 1:
+        # Agressão extrema (Imbalance > p90), Volume Alto (> p90), mas o preço NÃO ANDA (delta <= 1 tick).
+        # Indica Iceberg Passivo absorvendo toda a agressão no nível.
+        if vol_p >= 90 and imb_p >= 90 and abs(delta) <= 1:
             return BehaviorSignature.ABSORPTION_PASSIVE
 
         # 2. BREAKOUT GENUINE (Tier 1)
-        # Definição: Volume e Imbalance fortes (> p75), e o preço DESLOCOU (delta > 2 ticks).
+        # Volume e Imbalance fortes (> p75), e o preço DESLOCOU (delta > 2 ticks).
         # A agressão consumiu a liquidez e o mercado aceitou o novo preço.
-        if vol_p >= 75 and imb_p >= 75 and abs(delta_price_ticks) >= 2:
+        if vol_p >= 75 and imb_p >= 75 and abs(delta) >= 2:
             return BehaviorSignature.BREAKOUT_GENUINE
 
         # 3. ICEBERG ACCUMULATION / DISTRIBUTION (Tier 2)
-        # Definição: Volume executando consistentemente no mesmo nível (delta == 0), 
-        # mas sem o imbalance extremo de uma absorção (o mercado está sendo recarregado passivamente).
-        if vol_p >= 75 and abs(delta_price_ticks) == 0 and imb_p < 90:
+        # Volume alto executando no mesmo nível (delta == 0), sem imbalance extremo.
+        # Semântica CORRETA: se os compradores estão agredindo mas o preço não sobe,
+        # há uma parede PASSIVA DE VENDA no ASK -> ICEBERG_DISTRIBUTION (vendedor).
+        # Se os vendedores estão agredindo mas o preço não cai,
+        # há uma parede PASSIVA DE COMPRA no BID -> ICEBERG_ACCUMULATION (comprador).
+        if vol_p >= 75 and abs(delta) == 0 and imb_p < 90:
             if is_buy_pressure:
-                return BehaviorSignature.ICEBERG_ACCUMULATION
+                return BehaviorSignature.ICEBERG_DISTRIBUTION  # Muralha de venda absorvendo compras
             else:
-                return BehaviorSignature.ICEBERG_DISTRIBUTION
+                return BehaviorSignature.ICEBERG_ACCUMULATION  # Muralha de compra absorvendo vendas
 
         return BehaviorSignature.UNKNOWN
 
     def post_classify(self, price: float, clusters: List[LiquidityCluster]) -> BehaviorSignature:
         """
         Elevação de Tier baseada em Confluência Histórica (Recorrência).
+        Regra de precedência: DEFENSE_LINE > assinatura dominante > UNKNOWN.
+        Nota: MAGNET_EFFECT requer rastreamento de convergência de preço ao longo do tempo
+        e não pode ser inferido apenas por contagem de toques. Tratado como metadata futura.
         """
         if not clusters:
             return BehaviorSignature.UNKNOWN
 
-        # DEFENSE LINE (Tier 1): 3+ eventos de Absorção ou Iceberg no exato mesmo tick.
-        # Indica que uma instituição está defendendo ativamente este nível.
+        # DEFENSE LINE (Tier 1): 3+ eventos defensivos no exato mesmo nível.
+        # Indica que uma instituição está defendendo ativamente este preço.
         defensive_sigs = {
             BehaviorSignature.ABSORPTION_PASSIVE,
             BehaviorSignature.ICEBERG_ACCUMULATION,
@@ -110,23 +118,13 @@ class AdaptivePatternEngine:
         if defensive_count >= 3:
             return BehaviorSignature.DEFENSE_LINE
 
-        # MAGNET EFFECT (Tier 2): O preço tocou este nível 3+ vezes recentemente.
-        # O mercado está sendo atraído para esta liquidez.
-        # Ajuste: Isso só se aplica se o dominante for neutro ou indefinido, senao a assinatura original
-        # que provocou os toques e mais importante.
+        # Retorna a assinatura dominante preservando informação valiosa.
+        # Ex: 3x ICEBERG_ACCUMULATION retorna ICEBERG_ACCUMULATION, não MAGNET_EFFECT.
         sigs = [c.behavior_signature for c in clusters if c.behavior_signature != BehaviorSignature.UNKNOWN]
         if not sigs:
-            if len(clusters) >= 3:
-                return BehaviorSignature.MAGNET_EFFECT
             return BehaviorSignature.UNKNOWN
             
-        dominant = Counter(sigs).most_common(1)[0][0]
-        
-        # Se temos 3 clusters mas nao fechou defense line, e o dominante for fraco, elevamos para magnet
-        if len(clusters) >= 3 and dominant not in [BehaviorSignature.BREAKOUT_GENUINE]:
-             return BehaviorSignature.MAGNET_EFFECT
-             
-        return dominant
+        return Counter(sigs).most_common(1)[0][0]
 
     def get_signal_quality(self, signature: BehaviorSignature, session: str) -> dict:
         """Retorna a expectativa matemática do sinal baseada no backtest."""

@@ -73,7 +73,7 @@ class IngestionService:
                 batch_id  = batch_id,
                 raw_payload = e.raw,
             )
-            c.behavior_signature = self.engine.classify(c, delta_price_ticks=dp)
+            c.behavior_signature = self.engine.classify(c)
             clusters.append(c)
             self.last_closed_price = e.price
 

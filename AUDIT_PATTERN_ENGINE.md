@@ -129,3 +129,18 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** Remoção das injeções de string direta (`'{symbol}'` e `'{cutoff}'`) da cláusula `WHERE` da query analítica, trocando-as pelos marcadores nativos (`?`). A execução de `self.conn.execute()` agora passa a lista de parâmetros validada `[symbol, cutoff]`.
 - **Motivo:** Padronização institucional de cibersegurança. Embora os inputs locais fossem formatados pelo datetime, expor parâmetros em f-strings num banco de dados abre brechas teóricas para injeção e falhas de escape de aspas, solucionadas usando as binds nativas C++ da API do DuckDB.
 
+---
+
+## Iteração 3: Auditoria Semântica do AdaptivePatternEngine
+
+### Correção 7: Inversão Semântica dos Icebergs (`adaptive_pattern_engine.py`)
+- **Ação:** Invertida a lógica de retorno no ramo `ICEBERG_ACCUMULATION / DISTRIBUTION`. Quando `is_buy_pressure == True` (agressores comprando), a parede que impede o preço de subir é passiva de VENDA → `ICEBERG_DISTRIBUTION`. Quando vendedores agridem mas o preço não cai, a parede é de COMPRA → `ICEBERG_ACCUMULATION`.
+- **Motivo:** O código anterior estava semanticamente invertido: rotulava de "Acumulação" exatamente quando havia pressão de compra sem avanço de preço. A microestrutura real nos diz que *quem está passivo é o iniciador do padrão*, não o agressor. Um nível onde compradores atacam mas o preço não avança tem um *Iceberg Seller* (distribuição), não um Iceberg Buyer (acumulação).
+
+### Correção 8: Parâmetro Redundante `delta_price_ticks` (`adaptive_pattern_engine.py` + `ingestion.py`)
+- **Ação:** Removido o parâmetro avulso `delta_price_ticks: int = 0` de `classify()`. O método agora lê `cluster.delta_price_ticks` diretamente do modelo. A chamada em `ingestion.py` foi simplificada de `self.engine.classify(c, delta_price_ticks=dp)` para `self.engine.classify(c)`.
+- **Motivo:** Desde a Iteração 2, o campo `delta_price_ticks` já faz parte do modelo `LiquidityCluster` e é calculado pelo *Stateful Cursor* do `IngestionService`. Passar o mesmo valor como argumento avulso era redundante e abria possibilidade de divergência (o modelo conter `dp=2` mas a chamada passar `dp=0`).
+
+### Correção 9: `post_classify` Sobrescrevia Assinaturas Válidas com MAGNET_EFFECT (`adaptive_pattern_engine.py`)
+- **Ação:** Eliminada a lógica de elevação para `MAGNET_EFFECT` que ocorria quando `len(clusters) >= 3 and dominant not in [BREAKOUT_GENUINE]`. O método agora retorna simplesmente o `dominant` via `Counter(sigs).most_common(1)[0][0]`.
+- **Motivo:** A lógica anterior sobrescrevia assinaturas semanticamente ricas e corretas (ex: 3x `ICEBERG_ACCUMULATION`) com um rótulo genérico (`MAGNET_EFFECT`), destruindo informação valiosa de microestrutura. Além disso, `MAGNET_EFFECT` semanticamente requer rastreamento de *convergência de preço ao longo do tempo* (o preço se aproximando repetidamente de um nível), não pode ser inferido apenas por contagem de eventos no mesmo bucket — essa lógica está documentada como *roadmap* para uma futura feature baseada em séries temporais de toque ao nível.
