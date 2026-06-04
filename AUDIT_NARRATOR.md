@@ -102,6 +102,20 @@ O `narrator.py` original era um gerador de relatórios estáticos (~101 linhas) 
 
 ---
 
+## Iteração 4: Final Polish (Code Review 2)
+
+### Correção 7: Cache Key Omitia `notable_events` (Falso Positivo Crítico)
+- **Problema:** A cache key gerada na iteração 3 não incluía a lista de `notable_events`. Se apenas os eventos notáveis mudassem, o cache retornaria um relatório desatualizado.
+- **Ação:** `notable_events` adicionado à assinatura de `_compute_cache_key()` e concatenado no payload MD5 via `json.dumps`.
+
+### Melhoria 8: Polimentos Estilísticos e de Deprecation
+- **Ação 1:** Substituído `datetime.utcnow()` (deprecado no Python 3.12+) por `datetime.now(timezone.utc)`.
+- **Ação 2:** `import asyncio` realocado para o topo do arquivo (PEP 8).
+- **Ação 3:** Template `_generate_report` traduzido 100% para português para manter consistência com o prompt estruturado enviado ao LLM.
+- **Ação 4:** Docstring de `detect_confluences()` atualizada para documentar o 3º padrão suportado (`DISTRIBUTION_ABSORPTION`).
+
+---
+
 ## Status Final
 - `narrator.py`: ✅ Gold Tier — 100% Pronto para Produção
 - `llm_client.py`: ✅ Gold Tier (novo módulo)
