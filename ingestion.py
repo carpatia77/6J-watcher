@@ -64,12 +64,16 @@ class IngestionService:
             self.matrix.build_from_events(tape, dom, clusters=clusters)
 
             # Post-classify recurring levels (now based on persisted data)
+            # Use identity set to restrict refinement to NEW clusters only —
+            # clusters from previous batches are already persisted with their own signature
+            current_batch_ids = {id(c) for c in clusters}
             hotspots = self.matrix.hotspots(self.cfg.min_occurrences)
             for h in hotspots:
                 level_clusters = self.matrix.active_levels.get(h["price"], [])
                 refined = self.engine.post_classify(h["price"], level_clusters)
                 for c in level_clusters:
-                    c.behavior_signature = refined
+                    if id(c) in current_batch_ids:
+                        c.behavior_signature = refined
         except Exception:
             self.matrix.restore(snap)
             raise
