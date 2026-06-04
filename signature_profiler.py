@@ -24,6 +24,10 @@ class SignatureProfiler:
         return "OFF_HOURS"
 
     def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: float = 0.00005) -> dict:
+        if not isinstance(horizon_minutes, int) or not (1 <= horizon_minutes <= 1440):
+            raise ValueError("horizon_minutes must be an int between 1 and 1440")
+            
+        interval_clause = f"INTERVAL '{horizon_minutes}' MINUTE"
         cutoff = datetime.now() - timedelta(days=lookback_days)
         
         # 1. CÁLCULO VETORIAL DE MFE/MAE NO DUCKDB (Substitui o loop O(N^2) do Python)
@@ -43,18 +47,18 @@ class SignatureProfiler:
                 MAX(t.price) OVER (
                     PARTITION BY c.symbol 
                     ORDER BY t.timestamp 
-                    RANGE BETWEEN CURRENT ROW AND INTERVAL '{horizon_minutes}' MINUTE FOLLOWING
+                    RANGE BETWEEN CURRENT ROW AND {interval_clause} FOLLOWING
                 ) AS max_future_price,
                 MIN(t.price) OVER (
                     PARTITION BY c.symbol 
                     ORDER BY t.timestamp 
-                    RANGE BETWEEN CURRENT ROW AND INTERVAL '{horizon_minutes}' MINUTE FOLLOWING
+                    RANGE BETWEEN CURRENT ROW AND {interval_clause} FOLLOWING
                 ) AS min_future_price
             FROM liquidity_clusters c
             LEFT JOIN tape_events t 
               ON c.symbol = t.symbol 
              AND t.timestamp >= c.timestamp 
-             AND t.timestamp <= c.timestamp + INTERVAL '{horizon_minutes}' MINUTE
+             AND t.timestamp <= c.timestamp + {interval_clause}
             WHERE c.symbol = ? AND c.timestamp > ?
         )
         SELECT 

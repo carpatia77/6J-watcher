@@ -105,3 +105,7 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** O módulo instanciou formalmente um `logger = logging.getLogger(__name__)`. No método `build_profile()`, falhas do DuckDB não mais retornam um ditado mudo de erro (`return {"error": ...}`), mas registram a falha no logger e invocam um explícito `raise`.
 - **Motivo:** O antigo comportamento "engolia" exceções. Num pipeline produtivo, falhas de DB ou query mal formada devem ser capturadas pelo runtime e escalar imediatamente.
 
+### Melhoria de Engenharia 1: Validação de SQL contra Injection (`signature_profiler.py`)
+- **Ação:** Inserida trava de validação (`isinstance(horizon_minutes, int)`) e formatado com limite máximo de 1440 minutos. A query utiliza variável local formatada invés da interpolação direta na string multi-line.
+- **Motivo:** Boas práticas de segurança em montagem de strings SQL no Python, blindando o DuckDB contra vetores f-string em cláusulas `INTERVAL`.
+
