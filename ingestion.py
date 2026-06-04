@@ -31,8 +31,8 @@ class IngestionService:
 
         # Persist raw events (moved inside transaction block at the end)
 
-        # Feed matrix with both streams
-        self.matrix.build_from_events(tape, dom, classify=self.engine.classify)
+        # Feed matrix with both streams (no classify here — single classify below)
+        self.matrix.build_from_events(tape, dom)
 
         # Build clusters from tape and classify
         clusters: List[LiquidityCluster] = []
