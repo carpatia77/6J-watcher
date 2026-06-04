@@ -12,7 +12,7 @@ Entrypoint do 6J Watcher.
 import json
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from config import Config
 from ingestion import IngestionService
@@ -75,7 +75,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_server():
-    server = HTTPServer((cfg.host, cfg.port), Handler)
+    server = ThreadingHTTPServer((cfg.host, cfg.port), Handler)
     server.serve_forever()
 
 

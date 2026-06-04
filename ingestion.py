@@ -53,8 +53,6 @@ class IngestionService:
             c.behavior_signature = self.engine.classify(c)
             clusters.append(c)
 
-        self.repo.insert_clusters(clusters)
-
         # Post-classify recurring levels
         hotspots = self.matrix.hotspots(self.cfg.min_occurrences)
         for h in hotspots:
@@ -63,4 +61,5 @@ class IngestionService:
             for c in level_clusters:
                 c.behavior_signature = refined
 
+        self.repo.insert_clusters(clusters)
         return clusters

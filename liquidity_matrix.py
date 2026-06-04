@@ -2,6 +2,7 @@ from __future__ import annotations
 from collections import defaultdict, Counter
 from datetime import datetime
 from statistics import mean
+import threading
 from typing import Callable, Dict, List, Optional
 from models import BehaviorSignature, DOMLevel, LiquidityCluster, TapeEvent
 
@@ -14,6 +15,7 @@ class LiquidityMatrix:
         self.dom_snapshots: Dict[float, Dict[str, List[DOMLevel]]]         = defaultdict(lambda: defaultdict(list))
         self.tape_index:    Dict[float, Dict[str, List[TapeEvent]]]        = defaultdict(lambda: defaultdict(list))
         self.active_levels: Dict[float, List[LiquidityCluster]]            = defaultdict(list)
+        self.lock = threading.RLock()
 
     def normalize_price(self, price: float) -> float:
         return round(price / self.tick_size) * self.tick_size
@@ -24,18 +26,21 @@ class LiquidityMatrix:
     def ingest_cluster(self, cluster: LiquidityCluster):
         p = self.normalize_price(cluster.price)
         t = self.time_bucket(cluster.timestamp)
-        self.matrix[p][t].append(cluster)
-        self.active_levels[p].append(cluster)
+        with self.lock:
+            self.matrix[p][t].append(cluster)
+            self.active_levels[p].append(cluster)
 
     def ingest_dom(self, dom: DOMLevel):
         p = self.normalize_price(dom.price)
         t = self.time_bucket(dom.timestamp)
-        self.dom_snapshots[p][t].append(dom)
+        with self.lock:
+            self.dom_snapshots[p][t].append(dom)
 
     def ingest_tape(self, tape: TapeEvent):
         p = self.normalize_price(tape.price)
         t = self.time_bucket(tape.timestamp)
-        self.tape_index[p][t].append(tape)
+        with self.lock:
+            self.tape_index[p][t].append(tape)
 
     def build_from_events(
         self,
@@ -63,10 +68,11 @@ class LiquidityMatrix:
 
     def get_price_matrix(self, price: float) -> Dict:
         p        = self.normalize_price(price)
-        clusters = [c for bucket in self.matrix.get(p, {}).values() for c in bucket]
-        doms     = [d for bucket in self.dom_snapshots.get(p, {}).values() for d in bucket]
-        tapes    = [t for bucket in self.tape_index.get(p, {}).values() for t in bucket]
-        all_ts   = [c.timestamp for c in clusters] + [d.timestamp for d in doms] + [t.timestamp for t in tapes]
+        with self.lock:
+            clusters = [c for bucket in self.matrix.get(p, {}).values() for c in bucket]
+            doms     = [d for bucket in self.dom_snapshots.get(p, {}).values() for d in bucket]
+            tapes    = [t for bucket in self.tape_index.get(p, {}).values() for t in bucket]
+            all_ts   = [c.timestamp for c in clusters] + [d.timestamp for d in doms] + [t.timestamp for t in tapes]
         return {
             "symbol":                       self.symbol,
             "price":                        p,
@@ -86,7 +92,8 @@ class LiquidityMatrix:
 
     def hotspots(self, min_occurrences: int = 3) -> List[Dict]:
         out = []
-        for price, clusters in self.active_levels.items():
+        with self.lock:
+            for price, clusters in self.active_levels.items():
             if len(clusters) < min_occurrences:
                 continue
             sig = Counter(c.behavior_signature.value for c in clusters).most_common(1)[0][0]
