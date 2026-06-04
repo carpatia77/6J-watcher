@@ -1,4 +1,8 @@
 from __future__ import annotations
+# DEPRECATED — replaced by adaptive_pattern_engine.py (V2)
+# Mantido para preservar a timeline evolutiva do projeto.
+# Não utilizar em código novo.
+
 """
 pattern_engine.py
 -----------------
