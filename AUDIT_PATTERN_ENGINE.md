@@ -58,3 +58,7 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** Modificação das chaves do dicionário `session_utc` de minúsculas para maiúsculas (`ASIAN`, `LONDON`, `NEW_YORK`).
 - **Motivo:** O `signature_profiler` e o `adaptive_pattern_engine` utilizam strings UPPERCASE nativamente e as chaves do `profile.json` são exportadas dessa forma. A padronização no `config.py` evita divergências e operações de fallback ou lookup inválidas quando o engine for consultar o `thresholds[session]`.
 
+### Passo 2: Atualização de Dependências (`requirements.txt`)
+- **Ação:** Inclusão da biblioteca `numpy` (já havia `pandas`) no arquivo de dependências do projeto.
+- **Motivo:** O DuckDB nativamente expõe a função `.fetchdf()` que retorna um DataFrame Pandas para facilitar a análise vetorial, e a biblioteca NumPy será utilizada extensivamente no `signature_profiler` para o cálculo otimizado e seguro dos percentis empíricos de Volume e Imbalance (`np.percentile`).
+
