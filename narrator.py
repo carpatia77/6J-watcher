@@ -71,21 +71,15 @@ class Narrator:
                 lines.append(f"- {e}")
         else:
             lines.append("No notable events.")
-        return "
-".join(lines)
+        return "\n".join(lines)
 
     def alert(self, price: float, signature: str, occurrences: int, volume: int, confidence: float) -> str:
         return (
-            f"🔔 PATTERN DETECTED
-"
-            f"   Price:       {price:.5f}
-"
-            f"   Signature:   {signature}
-"
-            f"   Occurrences: {occurrences}
-"
-            f"   Volume:      {volume}
-"
+            f"🔔 PATTERN DETECTED\n"
+            f"   Price:       {price:.5f}\n"
+            f"   Signature:   {signature}\n"
+            f"   Occurrences: {occurrences}\n"
+            f"   Volume:      {volume}\n"
             f"   Confidence:  {confidence:.2f}"
         )
 
@@ -103,5 +97,4 @@ class Narrator:
             f"- First seen: {p.get('first_seen', 'n/a')}",
             f"- Last seen:  {p.get('last_seen', 'n/a')}",
         ]
-        return "
-".join(lines)
+        return "\n".join(lines)

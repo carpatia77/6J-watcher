@@ -34,10 +34,10 @@ void OnTimer()
    string tape_json = BuildTapeJSON();
    string dom_json  = BuildDOMJSON();
    if(tape_json == "[]" && dom_json == "[]") return;
-   string payload = "{"symbol":"" + SYMBOL_NAME + ""," +
-                    ""timestamp":"" + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + ""," +
-                    ""tape":" + tape_json + "," +
-                    ""dom":"  + dom_json  + "}";
+   string payload = "{\"symbol\":\"" + SYMBOL_NAME + "\"," +
+                    "\"timestamp\":\"" + TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"," +
+                    "\"tape\":" + tape_json + "," +
+                    "\"dom\":"  + dom_json  + "}";
    PostPayload(payload);
 }
 
@@ -52,10 +52,10 @@ string BuildTapeJSON()
    {
       string side = (ticks[i].flags & TICK_FLAG_BUY) ? "buy" : "sell";
       double price = (ticks[i].flags & TICK_FLAG_BUY) ? ticks[i].ask : ticks[i].bid;
-      result += "{"timestamp":"" + TimeToString(ticks[i].time, TIME_DATE|TIME_SECONDS) + ""," +
-                ""price":"        + DoubleToString(price, Digits()) + "," +
-                ""volume":"       + IntegerToString((int)ticks[i].volume) + "," +
-                ""side":""       + side + ""}";
+      result += "{\"timestamp\":\"" + TimeToString(ticks[i].time, TIME_DATE|TIME_SECONDS) + "\"," +
+                "\"price\":"        + DoubleToString(price, Digits()) + "," +
+                "\"volume\":"       + IntegerToString((int)ticks[i].volume) + "," +
+                "\"side\":\""       + side + "\"}";
       if(i < copied - 1) result += ",";
    }
    return result + "]";
@@ -79,11 +79,11 @@ string BuildDOMJSON()
       else if(book[i].type == BOOK_TYPE_BUY)  { side = "bid"; bid_vol = (int)book[i].volume; }
       else continue;
       if(count > 0) result += ",";
-      result += "{"timestamp":"" + ts + ""," +
-                ""price":"        + DoubleToString(book[i].price, Digits()) + "," +
-                ""level_index":"  + IntegerToString(count) + "," +
-                ""bid_volume":"   + IntegerToString(bid_vol) + "," +
-                ""ask_volume":"   + IntegerToString(ask_vol) + "}";
+      result += "{\"timestamp\":\"" + ts + "\"," +
+                "\"price\":"        + DoubleToString(book[i].price, Digits()) + "," +
+                "\"level_index\":"  + IntegerToString(count) + "," +
+                "\"bid_volume\":"   + IntegerToString(bid_vol) + "," +
+                "\"ask_volume\":"   + IntegerToString(ask_vol) + "}";
       count++;
    }
    return result + "]";
@@ -93,8 +93,7 @@ string BuildDOMJSON()
 void PostPayload(string payload)
 {
    char data[], result[];
-   string headers = "Content-Type: application/json
-";
+   string headers = "Content-Type: application/json\r\n";
    StringToCharArray(payload, data, 0, WHOLE_ARRAY, CP_UTF8);
    ResetLastError();
    int res = WebRequest("POST", PYTHON_ENDPOINT, headers, 3000, data, result, headers);
