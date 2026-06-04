@@ -22,6 +22,15 @@ class DuckDBRepository:
         self.conn = duckdb.connect(db_path)
         self._init_schema()
 
+    def begin(self):
+        self.conn.execute("BEGIN TRANSACTION")
+
+    def commit(self):
+        self.conn.execute("COMMIT")
+
+    def rollback(self):
+        self.conn.execute("ROLLBACK")
+
     def _init_schema(self):
         self.conn.executemany("", [])  # warm-up
         self.conn.execute("""

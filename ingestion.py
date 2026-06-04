@@ -29,9 +29,7 @@ class IngestionService:
         tape   = parse_tape_rows(tape_rows, symbol)
         dom    = parse_dom_rows(dom_rows, symbol)
 
-        # Persist raw events
-        self.repo.insert_tape_events(tape)
-        self.repo.insert_dom_levels(dom)
+        # Persist raw events (moved inside transaction block at the end)
 
         # Feed matrix with both streams
         self.matrix.build_from_events(tape, dom, classify=self.engine.classify)
@@ -61,5 +59,14 @@ class IngestionService:
             for c in level_clusters:
                 c.behavior_signature = refined
 
-        self.repo.insert_clusters(clusters)
+        self.repo.begin()
+        try:
+            self.repo.insert_tape_events(tape)
+            self.repo.insert_dom_levels(dom)
+            self.repo.insert_clusters(clusters)
+            self.repo.commit()
+        except Exception:
+            self.repo.rollback()
+            raise
+
         return clusters

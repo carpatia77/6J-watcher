@@ -3,8 +3,7 @@
 //|  Lê T&S e DOM da ClusterDelta e posta JSON para o servidor Python |
 //+------------------------------------------------------------------+
 #property strict
-#property indicator_chart_window
-#property indicator_buffers 0
+
 
 input string PYTHON_ENDPOINT = "http://127.0.0.1:8765/ingest";
 input string SYMBOL_NAME     = "6J";
@@ -21,13 +20,6 @@ int OnInit()
 }
 
 void OnDeinit(const int reason) { EventKillTimer(); }
-
-int OnCalculate(const int rates_total, const int prev_calculated,
-                const datetime &time[], const double &open[],
-                const double &high[], const double &low[],
-                const double &close[], const long &tick_volume[],
-                const long &volume[], const int &spread[])
-{ return(rates_total); }
 
 void OnTimer()
 {

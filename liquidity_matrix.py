@@ -108,3 +108,36 @@ class LiquidityMatrix:
                 "last":               max(c.timestamp for c in clusters),
             })
         return sorted(out, key=lambda x: x["occurrences"], reverse=True)
+
+    def prune_stale_data(self, hours: int = 4):
+        import datetime as dt
+        cutoff = dt.datetime.utcnow() - dt.timedelta(hours=hours)
+        with self.lock:
+            for p in list(self.matrix.keys()):
+                for t in list(self.matrix[p].keys()):
+                    bucket_ts = dt.datetime.strptime(t, "%Y-%m-%d %H:%M")
+                    if bucket_ts < cutoff:
+                        del self.matrix[p][t]
+                if not self.matrix[p]:
+                    del self.matrix[p]
+
+            for p in list(self.dom_snapshots.keys()):
+                for t in list(self.dom_snapshots[p].keys()):
+                    bucket_ts = dt.datetime.strptime(t, "%Y-%m-%d %H:%M")
+                    if bucket_ts < cutoff:
+                        del self.dom_snapshots[p][t]
+                if not self.dom_snapshots[p]:
+                    del self.dom_snapshots[p]
+
+            for p in list(self.tape_index.keys()):
+                for t in list(self.tape_index[p].keys()):
+                    bucket_ts = dt.datetime.strptime(t, "%Y-%m-%d %H:%M")
+                    if bucket_ts < cutoff:
+                        del self.tape_index[p][t]
+                if not self.tape_index[p]:
+                    del self.tape_index[p]
+
+            self.active_levels.clear()
+            for p, buckets in self.matrix.items():
+                for t, clusters in buckets.items():
+                    self.active_levels[p].extend(clusters)

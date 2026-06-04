@@ -89,6 +89,7 @@ if __name__ == "__main__":
     print()
     while True:
         time.sleep(30)
+        matrix.prune_stale_data(hours=4)
         hotspots = matrix.hotspots(cfg.min_occurrences)
         if hotspots:
             print(f"[{__import__('datetime').datetime.utcnow().strftime('%H:%M:%S')}] "
