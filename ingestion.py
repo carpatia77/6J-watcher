@@ -9,6 +9,7 @@ Orquestra o pipeline completo de ingestão:
   4. Classifica assinatura comportamental
   5. Devolve clusters gerados
 """
+import logging
 from typing import Dict, List
 from config import Config
 from models import LiquidityCluster
@@ -28,6 +29,17 @@ class IngestionService:
     def ingest_batch(self, tape_rows: List[Dict], dom_rows: List[Dict], symbol: str) -> List[LiquidityCluster]:
         tape   = parse_tape_rows(tape_rows, symbol)
         dom    = parse_dom_rows(dom_rows, symbol)
+
+        # Validate parse results — warn and bail out early on malformed payloads
+        if tape_rows and not tape:
+            logging.warning(
+                "[ingest_batch] %d tape_rows recebidas mas nenhuma parseada com sucesso "
+                "(symbol=%s) — payload pode estar malformado.",
+                len(tape_rows), symbol,
+            )
+            return []
+        if not tape:
+            return []  # nada a processar — payload vazio legítimo
 
         # Build clusters from tape — single source of truth
         clusters: List[LiquidityCluster] = []
