@@ -81,7 +81,7 @@ class SignatureProfiler:
         """
         
         try:
-            rel = self.conn.sql(base_query)
+            base_rel = self.conn.sql(base_query)
             
             sig_query = """
                 SELECT 
@@ -92,10 +92,10 @@ class SignatureProfiler:
                     SUM(gross_profit) AS total_gross_profit,
                     SUM(gross_loss) AS total_gross_loss,
                     AVG(mfe) AS avg_mfe
-                FROM rel
+                FROM base_result
                 GROUP BY behavior_signature, session
             """
-            sig_df = self.conn.sql(sig_query).fetchdf()
+            sig_df = base_rel.query("base_result", sig_query).fetchdf()
             
             perc_query = """
                 SELECT 
@@ -111,10 +111,10 @@ class SignatureProfiler:
                     QUANTILE_CONT(imbalance, 0.90) AS imb_p90,
                     QUANTILE_CONT(imbalance, 0.95) AS imb_p95,
                     QUANTILE_CONT(imbalance, 0.99) AS imb_p99
-                FROM rel
+                FROM base_result
                 GROUP BY session
             """
-            perc_df = self.conn.sql(perc_query).fetchdf()
+            perc_df = base_rel.query("base_result", perc_query).fetchdf()
             
         except Exception as e:
             logger.error(f"[Profiler] DuckDB execution failed: {e}")

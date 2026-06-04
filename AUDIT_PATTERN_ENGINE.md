@@ -121,3 +121,7 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** Substituída a `Window Function` por um `GROUP BY` na subquery `cluster_excursions` contendo obrigatoriamente a assinatura temporal única (`c.timestamp`).
 - **Motivo:** O uso do `LEFT JOIN` com um horizonte temporal expandia o cluster para cada tick do tape subsequente (Ex: 1 cluster seguido de 50 eventos de tape na meia-hora resultava em 50 linhas para o mesmo cluster). Ao colapsar os clusters de volta com o `GROUP BY c.timestamp, ...`, isolamos o cálculo exato de MFE e MAE com agregação clássica e garantimos que o cálculo das estatísticas subsequentes não sofre inflação irreal e preserva estritamente o princípio fundamental estatístico de "1 cluster = 1 linha".
 
+### Correção 6 (Hotfix): DuckDB-Pythonic Relation API (`signature_profiler.py`)
+- **Ação:** Refatorada a chamada subsequente das views de `self.conn.sql(...)` com a diretiva `FROM rel` para a chamada matricial direta `base_rel.query("base_result", ...)`.
+- **Motivo:** Um objeto do tipo `DuckDBPyRelation` instanciado no script Python não se auto-inscreve magicamente no *Catalog* do banco de dados (o que gerava o erro `Catalog Error: Table with name rel does not exist!`). O uso da API nativa `.query("alias_name", ...)` garante que o DuckDB enxergue o ponteiro virtual de memória e possa compilar as views agregadas (`sig_query` e `perc_query`) diretamente por cima da árvore relacional do CTE base, sem falhas de escopo.
+
