@@ -93,3 +93,15 @@ A solução adotada decompõe o problema em duas responsabilidades completamente
 - **Ação:** Adicionado o atributo `delta_price_ticks: int = 0` na dataclass `LiquidityCluster`.
 - **Motivo:** Solucionar a falha semântica do `LAG()` no Profiler. Em vez de deduzir o delta a partir de consultas SQL lentas e imprecisas, o delta exato calculado em O(1) pelo Ingestion Service será transportado no próprio objeto de cluster e persistido nativamente.
 
+### Correção 2: Viés de Seleção no SQL (`signature_profiler.py`)
+- **Ação:** O `JOIN` com a tabela `tape_events` foi alterado para `LEFT JOIN`, e o cálculo do pandas passou a usar `fillna(df['c_price'])`.
+- **Motivo:** O INNER JOIN silenciosamente descartava clusters do final da sessão (que não tinham eventos subsequentes na janela de 30 minutos). O `LEFT JOIN` com fillna preenche "deslocamento zero" para essas ocasiões, removendo o viés de otimismo matemático.
+
+### Correção 3: Ruído Estatístico em Amostras Pequenas (`signature_profiler.py`)
+- **Ação:** Inserida trava `MIN_SAMPLES_FOR_PERCENTILES = 100` antes de calcular percentis empíricos por sessão. Se a amostra não atingir o limite, o profiler faz um bypass inserindo thresholds predeterminados via fallback estático.
+- **Motivo:** Evitar que distribuições não-representativas (ex: OFF_HOURS com apenas 10 eventos) gerem percentis p90/p95 extremamente sensíveis a outliers únicos, bagunçando a inferência online subsequente.
+
+### Correção 4: Robustez no Logging e Exceptions (`signature_profiler.py`)
+- **Ação:** O módulo instanciou formalmente um `logger = logging.getLogger(__name__)`. No método `build_profile()`, falhas do DuckDB não mais retornam um ditado mudo de erro (`return {"error": ...}`), mas registram a falha no logger e invocam um explícito `raise`.
+- **Motivo:** O antigo comportamento "engolia" exceções. Num pipeline produtivo, falhas de DB ou query mal formada devem ser capturadas pelo runtime e escalar imediatamente.
+

@@ -6,6 +6,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
 
+logger = logging.getLogger(__name__)
+
 class SignatureProfiler:
     """
     Calcula MFE/MAE via DuckDB Window Functions e gera Tabelas de Percentis
@@ -31,7 +33,7 @@ class SignatureProfiler:
             SELECT 
                 c.timestamp,
                 c.price AS c_price,
-                ROUND((c.price - LAG(c.price) OVER (PARTITION BY c.symbol ORDER BY c.timestamp)) / ?) AS delta_price_ticks,
+                c.delta_price_ticks,
                 c.behavior_signature,
                 c.session,
                 c.total_bid,
@@ -49,7 +51,7 @@ class SignatureProfiler:
                     RANGE BETWEEN CURRENT ROW AND INTERVAL '{horizon_minutes}' MINUTE FOLLOWING
                 ) AS min_future_price
             FROM liquidity_clusters c
-            JOIN tape_events t 
+            LEFT JOIN tape_events t 
               ON c.symbol = t.symbol 
              AND t.timestamp >= c.timestamp 
              AND t.timestamp <= c.timestamp + INTERVAL '{horizon_minutes}' MINUTE
@@ -62,9 +64,10 @@ class SignatureProfiler:
         """
         
         try:
-            df = self.conn.execute(mfe_mae_query, [tick_size, symbol, cutoff]).fetchdf()
+            df = self.conn.execute(mfe_mae_query, [symbol, cutoff]).fetchdf()
         except Exception as e:
-            return {"error": f"DuckDB execution failed: {e}"}
+            logger.error(f"[Profiler] DuckDB execution failed: {e}")
+            raise
 
         if df.empty:
             return {"error": "No historical data found."}
@@ -73,11 +76,20 @@ class SignatureProfiler:
         bullish_sigs = ['ICEBERG_ACCUMULATION', 'BREAKOUT_GENUINE', 'MAGNET_EFFECT']
         
         df['is_bullish'] = df['behavior_signature'].isin(bullish_sigs)
-        df['mfe'] = np.where(df['is_bullish'], df['max_future_price'] - df['c_price'], df['c_price'] - df['min_future_price'])
-        df['mae'] = np.where(df['is_bullish'], df['c_price'] - df['min_future_price'], df['max_future_price'] - df['c_price'])
+        df['mfe'] = np.where(df['is_bullish'], df['max_future_price'].fillna(df['c_price']) - df['c_price'], df['c_price'] - df['min_future_price'].fillna(df['c_price']))
+        df['mae'] = np.where(df['is_bullish'], df['c_price'] - df['min_future_price'].fillna(df['c_price']), df['max_future_price'].fillna(df['c_price']) - df['c_price'])
         df['win'] = (df['mfe'] > np.abs(df['mae'])) & (df['mfe'] > 0)
 
         return self._generate_empirical_percentiles(df)
+
+    def _get_fallback_thresholds(self, sess: str) -> dict:
+        fallbacks = {
+            "ASIAN":     {"vol_percentiles": {"90": 20, "75": 10}, "imb_percentiles": {"90": 10, "75": 5}},
+            "LONDON":    {"vol_percentiles": {"90": 35, "75": 20}, "imb_percentiles": {"90": 20, "75": 10}},
+            "NEW_YORK":  {"vol_percentiles": {"90": 50, "75": 30}, "imb_percentiles": {"90": 30, "75": 15}},
+            "OFF_HOURS": {"vol_percentiles": {"90": 15, "75": 5},  "imb_percentiles": {"90": 5,  "75": 2}}
+        }
+        return fallbacks.get(sess, fallbacks["OFF_HOURS"])
 
     def _generate_empirical_percentiles(self, df) -> dict:
         """
@@ -108,8 +120,15 @@ class SignatureProfiler:
         # Tabelas de Percentis para o Motor em Tempo Real
         percentiles_to_calc = [50, 75, 90, 95, 99]
         
+        MIN_SAMPLES_FOR_PERCENTILES = 100
+        
         for sess, group in df.groupby('session'):
             if group.empty: continue
+            
+            if len(group) < MIN_SAMPLES_FOR_PERCENTILES:
+                logger.warning(f"[Profiler] Sessão {sess} tem apenas {len(group)} amostras; usando fallback thresholds")
+                profile["thresholds"][sess] = self._get_fallback_thresholds(sess)
+                continue
             
             # Calcula os percentis exatos para Volume, Imbalance e Adiciona Tick Displacement (Proxy)
             profile["thresholds"][sess] = {
@@ -122,4 +141,4 @@ class SignatureProfiler:
     def save_profile(self, profile: dict, path: str = "profile.json"):
         with open(path, 'w') as f:
             json.dump(profile, f, indent=2, default=str)
-        logging.info(f"[Profiler] Empirical Profile saved to {path}")
+        logger.info(f"[Profiler] Empirical Profile saved to {path}")
