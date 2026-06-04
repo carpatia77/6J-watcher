@@ -30,3 +30,7 @@ O core do repositório já se encontra ancorado em três pilares fundamentais, v
 ### 2. Remoção de Artefatos Incompatíveis (Warm-up)
 - **Problema:** O método `_init_schema` executava uma query nula `self.conn.executemany("", [])` com o intuito de fazer "warm-up" na conexão. Esse é um padrão legado (comum em pools antigos de banco de dados) que o motor colunar do DuckDB não exige. O uso de queries vazias poderia causar exceções em versões futuras ou comportamentos imprevisíveis.
 - **Solução:** A linha inútil foi completamente removida. O DuckDB inicializa a base e a conexão no momento do `.connect()` e processa os `CREATE TABLE` imediatamente sem necessidade de pré-aquecimento.
+
+### 3. Precisão Estatística em `recurring_levels` (ANY_VALUE vs MODE)
+- **Problema:** A query `recurring_levels` usava `ANY_VALUE(behavior_signature) dominant` para tentar extrair a assinatura de comportamento principal de um nível de preço. No entanto, `ANY_VALUE` é não-determinístico e retorna uma assinatura aleatória do grupo, gerando falsos positivos na identificação de perfis institucionais.
+- **Solução:** A query foi corrigida para utilizar a função agregadora estatística `MODE(behavior_signature)`. O DuckDB suporta o `MODE()` nativamente, o que garante matematicamente o retorno da assinatura que apareceu com a maior frequência (moda estatística) naquele bloco de preço, mantendo a performance da query sem a necessidade de CTEs complexas.

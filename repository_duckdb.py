@@ -127,7 +127,7 @@ class DuckDBRepository:
         return self.conn.execute(
             """SELECT price, COUNT(*) occ,
                       MIN(timestamp) first_seen, MAX(timestamp) last_seen,
-                      ANY_VALUE(behavior_signature) dominant
+                      MODE(behavior_signature) dominant
                FROM liquidity_clusters WHERE symbol=?
                GROUP BY price HAVING COUNT(*)>=?
                ORDER BY occ DESC""",
