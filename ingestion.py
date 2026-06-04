@@ -10,6 +10,7 @@ Orquestra o pipeline completo de ingestão:
   5. Devolve clusters gerados
 """
 import logging
+import time
 from typing import Dict, List
 from config import Config
 from models import LiquidityCluster
@@ -50,7 +51,6 @@ class IngestionService:
 
         # Build clusters from tape — single source of truth
         clusters: List[LiquidityCluster] = []
-        import time
         batch_id = str(time.time_ns())
         for e in tape:
             session = self.cfg.session_for(e.timestamp.hour)
