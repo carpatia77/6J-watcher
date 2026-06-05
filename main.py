@@ -181,6 +181,5 @@ if __name__ == "__main__":
         hotspots = matrix.hotspots(cfg.min_occurrences)
         if hotspots:
             from datetime import datetime, timezone
-            import json
             print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
                   f"{len(hotspots)} hotspot(s) ativos — top: {json.dumps(hotspots[0], default=str)}")
