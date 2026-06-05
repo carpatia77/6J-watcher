@@ -1,6 +1,7 @@
 //+------------------------------------------------------------------+
 //|  6J Watcher MQL Bridge                                           |
-//|  Lê T&S e DOM da ClusterDelta e posta JSON para o servidor Python |
+//|  Lê T&S e DOM institucional da ClusterDelta via DLL e            |
+//|  posta JSON formatado para o servidor Python.                    |
 //+------------------------------------------------------------------+
 #property strict
 
@@ -17,7 +18,7 @@ input bool   USE_FUTURES_MAPPING = true;// Mapeia spot -> futuro CME
 input int    TIMER_MS        = 200;     // frequência de envio (5x por segundo)
 input int    DOM_LEVELS      = 10;      // quantos níveis do DOM capturar
 
-//--- Variáveis globais para Queue e Métricas
+//--- Variáveis globais
 string pending_queue[];
 int    max_queue_size = 100;
 int    retry_attempts = 3;
@@ -25,7 +26,9 @@ int    retry_attempts = 3;
 int    stats_sent     = 0;
 int    stats_failed   = 0;
 datetime last_success = 0;
+
 int    cd_session_id  = 0; // ID da sessão da DLL
+string clusterdelta_client = ""; // Gerado no OnInit
 
 //+------------------------------------------------------------------+
 //| Funções Auxiliares de JSON                                       |
@@ -62,35 +65,37 @@ string GetSymbolName() {
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   // 1. Valida permissão WebRequest global
    if(!TerminalInfoInteger(TERMINAL_WEBREQUEST_ENABLE)) {
       Print("[ERRO CRÍTICO] WebRequest não habilitado.");
-      Print("Solução: Tools -> Options -> Expert Advisors -> Allow WebRequest");
       return(INIT_FAILED);
    }
    
-   // 2. Valida URL específica
    string allowed_urls = TerminalInfoString(TERMINAL_WEBREQUEST_URLS);
    if(StringFind(allowed_urls, PYTHON_ENDPOINT) == -1) {
       Print("[ERRO CRÍTICO] URL não permitida para WebRequest: " + PYTHON_ENDPOINT);
-      Print("Solução: Tools -> Options -> Expert Advisors -> Allow WebRequest -> Adicionar: " + PYTHON_ENDPOINT);
       return(INIT_FAILED);
    }
    
-   // 3. Inicializa conexão com ClusterDelta
+   // Inicializa conexão com ClusterDelta
    if(Online_Init(cd_session_id) <= 0) {
       Print("[ERRO] Falha ao inicializar ClusterDelta DLL");
-      // Mesmo falhando a inicializacao da DLL, pode ser um mock. Deixamos continuar ou falhamos dependendo do caso.
-      // return(INIT_FAILED); 
    }
    
-   // Inicializa Queue
-   ArrayResize(pending_queue, 0);
+   // Gera client ID e inscreve para receber stream
+   clusterdelta_client = "CDPT" + StringSubstr(IntegerToString(TimeLocal()),7,3) + DoubleToString(MathAbs(MathRand()%10),0);
+   string cmt = AccountInfoString(ACCOUNT_COMPANY);
+   int acnt = (int)AccountInfoInteger(ACCOUNT_LOGIN);
    
-   // Inicia Timer de alta frequência
+   int sub = Online_Subscribe(cd_session_id, clusterdelta_client, Symbol(), Period(), 
+                              TimeToString(TimeCurrent()), TimeToString(TimeCurrent()), 
+                              GetSymbolName(), TimeToString(0), "0", "5.63", 0, 
+                              TimeToString(D'2017.01.01 00:00'), TimeToString(D'2017.01.01 00:00'), 
+                              cmt, acnt);
+   
+   ArrayResize(pending_queue, 0);
    EventSetMillisecondTimer(TIMER_MS);
    
-   Print("[6J Watcher] Inicializado com sucesso. Enviando para: ", PYTHON_ENDPOINT);
+   Print("[6J Watcher] Ponte ClusterDelta->Python inicializada. Enviando para: ", PYTHON_ENDPOINT);
    return(INIT_SUCCEEDED);
 }
 
@@ -103,35 +108,111 @@ void OnDeinit(const int reason) {
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   datetime start = GetMicrosecondCount();
-   
-   // 1. Tenta processar fila de retentativas
    ProcessPendingQueue();
+   ProcessClusterDeltaStream();
+}
+
+//+------------------------------------------------------------------+
+//| Parser do Stream da ClusterDelta (Engenharia Reversa)            |
+//+------------------------------------------------------------------+
+void ProcessClusterDeltaStream()
+{
+   int length = 0;
+   string stream = Online_Data(length, clusterdelta_client);
    
-   // 2. Coleta dados (Tape e DOM)
-   string tape_json = BuildTapeJSON();
-   string dom_json  = BuildDOMJSON();
+   if(length == 0 || StringLen(stream) < 10) return;
    
-   if(tape_json == "[]" && dom_json == "[]") return;
+   string allpackets[], packet[], internal[], domdata[];
+   int all = StringSplit(stream, ':', allpackets);
+   if(all == 0 || allpackets[0] != clusterdelta_client) return;
    
-   // 3. Constrói payload seguro
-   string ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
+   string tape_result = "[";
+   bool tape_first = true;
+   
+   string dom_result = "[";
+   bool dom_first = true;
+   
+   int DOM_saved = 0;
+   
+   for(int l = 1; l < all; l++) {
+      int num_packets = StringSplit(allpackets[l], '#', packet);
+      
+      for(int i = 0; i < num_packets; i++) {
+         if(packet[i] == ":" || StringLen(packet[i]) < 3) continue;
+         
+         int ts = StringSplit(packet[i], ';', internal);
+         
+         if(packet[i] == "DOM") { 
+             DOM_saved = 1; 
+             continue; 
+         }
+         
+         // Se o packet anterior era "DOM", este packet contém os níveis divididos por '|'
+         if(DOM_saved == 1) {
+            for(int k = 0; k < ts; k++) {
+               if(StringSplit(internal[k], '|', domdata) >= 2) {
+                  bool is_ask = (StringSubstr(domdata[0], 0, 1) == "A");
+                  int index = (int)StringToInteger(StringSubstr(domdata[0], 1, 2));
+                  double price = StringToDouble(StringSubstr(domdata[0], 3));
+                  int vol = (int)StringToInteger(domdata[1]);
+                  
+                  if(index < DOM_LEVELS) {
+                     if(!dom_first) dom_result += ",";
+                     int bid_vol = is_ask ? 0 : vol;
+                     int ask_vol = is_ask ? vol : 0;
+                     
+                     // Formata JSON do DOM
+                     dom_result += "{\"timestamp\":\"" + JsonEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)) + "\"," +
+                                   "\"price\":" + JsonNumber(price) + "," +
+                                   "\"level_index\":" + IntegerToString(index) + "," +
+                                   "\"bid_volume\":" + IntegerToString(bid_vol) + "," +
+                                   "\"ask_volume\":" + IntegerToString(ask_vol) + "}";
+                     dom_first = false;
+                  }
+               }
+            }
+            DOM_saved = 0;
+            continue;
+         }
+         
+         // Se possui 3 campos (TimestampTypePrice ; ... ; Volume), é um registro de Time & Sales
+         if(ts == 3) {
+            string timestamp_str = TimeToString((datetime)StringToInteger(StringSubstr(internal[1], 0, 10)), TIME_DATE|TIME_SECONDS);
+            string type_char = StringSubstr(internal[1], 10, 1);
+            // Na ClusterDelta: 'A' = Ask (Aggressor de Compra), 'B' = Bid (Aggressor de Venda)
+            string side = (type_char == "B") ? "sell" : "buy"; 
+            double price = StringToDouble(StringSubstr(internal[1], 11));
+            int vol = (int)StringToInteger(internal[2]);
+            
+            if(!tape_first) tape_result += ",";
+            tape_result += "{\"timestamp\":\"" + JsonEscape(timestamp_str) + "\"," +
+                           "\"price\":" + JsonNumber(price) + "," +
+                           "\"volume\":" + IntegerToString(vol) + "," +
+                           "\"side\":\"" + JsonEscape(side) + "\"}";
+            tape_first = false;
+         }
+      }
+   }
+   
+   tape_result += "]";
+   dom_result += "]";
+   
+   if(tape_result == "[]" && dom_result == "[]") return;
+   
+   string current_ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
    string payload = "{\"symbol\":\"" + JsonEscape(GetSymbolName()) + "\"," +
-                    "\"timestamp\":\"" + JsonEscape(ts) + "\"," +
-                    "\"tape\":" + tape_json + "," +
-                    "\"dom\":"  + dom_json  + "}";
+                    "\"timestamp\":\"" + JsonEscape(current_ts) + "\"," +
+                    "\"tape\":" + tape_result + "," +
+                    "\"dom\":"  + dom_result  + "}";
                     
-   // 4. Tenta enviar
    if(!SendWithRetry(payload, retry_attempts)) {
       AddToPendingQueue(payload);
       stats_failed++;
    } else {
       stats_sent++;
       last_success = TimeCurrent();
-      
-      // Métricas periódicas
       if(stats_sent % 100 == 0) {
-         Print("[STATS] Enviados: ", stats_sent, " | Falhas: ", stats_failed, " | Último sucesso: ", TimeToString(last_success));
+         Print("[STATS] Enviados: ", stats_sent, " | Falhas: ", stats_failed, " | Último: ", TimeToString(last_success));
       }
    }
 }
@@ -143,7 +224,7 @@ bool SendWithRetry(string payload, int max_retries)
 {
    for(int i = 0; i < max_retries; i++) {
       if(PostPayload(payload)) return true;
-      Sleep(100); // aguarda 100ms antes do retry
+      Sleep(100);
    }
    return false;
 }
@@ -152,7 +233,6 @@ void AddToPendingQueue(string payload)
 {
    int size = ArraySize(pending_queue);
    if(size >= max_queue_size) {
-      // Remove o elemento mais antigo (shift-left)
       ArrayCopy(pending_queue, pending_queue, 0, 1, WHOLE_ARRAY - 1);
       ArrayResize(pending_queue, max_queue_size);
       size = max_queue_size - 1;
@@ -166,10 +246,9 @@ void ProcessPendingQueue()
 {
    for(int i = 0; i < ArraySize(pending_queue); i++) {
       if(SendWithRetry(pending_queue[i], 1)) {
-         // Se sucesso, remove da fila (shift-left do resto do array)
          ArrayCopy(pending_queue, pending_queue, i, i + 1, WHOLE_ARRAY - i - 1);
          ArrayResize(pending_queue, ArraySize(pending_queue) - 1);
-         i--; // Reajusta o iterador
+         i--;
       }
    }
 }
@@ -185,89 +264,8 @@ bool PostPayload(string payload)
    
    int res = WebRequest("POST", PYTHON_ENDPOINT, headers, 3000, data, result, response_headers);
    
-   if(res == -1) {
-      return false; // Erro de conexão (ex: timeout, endpoint down)
-   }
-   
-   // Verifica se o servidor retornou HTTP 200 OK
-   if(StringFind(response_headers, "200 OK") == -1) {
-      string response_body = CharArrayToString(result);
-      Print("[ERRO HTTP] Status falhou: ", response_headers);
-      Print("[ERRO BODY] ", response_body);
-      return false;
-   }
+   if(res == -1) return false;
+   if(StringFind(response_headers, "200 OK") == -1) return false;
    
    return true;
-}
-
-//+------------------------------------------------------------------+
-//| Coleta de Dados (ClusterDelta)                                   |
-//+------------------------------------------------------------------+
-string BuildTapeJSON()
-{
-   // NOTA ARQUITETURAL: Aqui deveríamos usar a função Online_Data() da DLL.
-   // Como os detalhes internos do parse de string da DLL não estão especificados, 
-   // usaremos MqlTick como fallback temporário estrutural apenas para demonstrar
-   // o JSON builder, mas o fluxo de dados IDEAL DEVE vir da DLL CD.
-   
-   MqlTick ticks[];
-   int copied = CopyTicks(_Symbol, ticks, COPY_TICKS_TRADE, 0, 20);
-   if(copied <= 0) return("[]");
-   
-   string result = "[";
-   for(int i = 0; i < copied; i++)
-   {
-      string side = (ticks[i].flags & TICK_FLAG_BUY) ? "buy" : "sell";
-      double price = (ticks[i].flags & TICK_FLAG_BUY) ? ticks[i].ask : ticks[i].bid;
-      
-      result += "{\"timestamp\":\"" + JsonEscape(TimeToString(ticks[i].time, TIME_DATE|TIME_SECONDS)) + "\"," +
-                "\"price\":"        + JsonNumber(price) + "," +
-                "\"volume\":"       + IntegerToString((int)ticks[i].volume) + "," +
-                "\"side\":\""       + JsonEscape(side) + "\"}";
-                
-      if(i < copied - 1) result += ",";
-   }
-   return result + "]";
-}
-
-string BuildDOMLevelJSON(string ts, double price, int level_idx, int bid_vol, int ask_vol)
-{
-   return "{\"timestamp\":\"" + JsonEscape(ts) + "\"," +
-          "\"price\":" + JsonNumber(price) + "," +
-          "\"level_index\":" + IntegerToString(level_idx) + "," +
-          "\"bid_volume\":" + IntegerToString(bid_vol) + "," +
-          "\"ask_volume\":" + IntegerToString(ask_vol) + "}";
-}
-
-string BuildDOMJSON()
-{
-   // NOTA ARQUITETURAL: Assim como o T&S, o DOM deve ser lido via DLL (Online_Data).
-   // O código abaixo demonstra a estruturação bid/ask separada.
-   MqlBookInfo book[];
-   if(!MarketBookGet(_Symbol, book)) return("[]");
-   
-   string result = "[";
-   string ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
-   int bid_count = 0, ask_count = 0;
-   bool first = true;
-   
-   // 1. Processa Bids
-   for(int i = 0; i < ArraySize(book) && bid_count < DOM_LEVELS; i++) {
-      if(book[i].type != BOOK_TYPE_BUY) continue;
-      if(!first) result += ",";
-      result += BuildDOMLevelJSON(ts, book[i].price, bid_count, (int)book[i].volume, 0);
-      bid_count++;
-      first = false;
-   }
-   
-   // 2. Processa Asks
-   for(int i = 0; i < ArraySize(book) && ask_count < DOM_LEVELS; i++) {
-      if(book[i].type != BOOK_TYPE_SELL) continue;
-      if(!first) result += ",";
-      result += BuildDOMLevelJSON(ts, book[i].price, DOM_LEVELS + ask_count, 0, (int)book[i].volume);
-      ask_count++;
-      first = false;
-   }
-   
-   return result + "]";
 }
