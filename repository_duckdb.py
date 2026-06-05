@@ -26,10 +26,18 @@ class DuckDBRepository:
         self.conn.execute("BEGIN TRANSACTION")
 
     def commit(self):
-        self.conn.execute("COMMIT")
+        """Commit da transação. Silencioso se não houver transação ativa."""
+        try:
+            self.conn.execute("COMMIT")
+        except Exception as e:
+            pass
 
     def rollback(self):
-        self.conn.execute("ROLLBACK")
+        """Rollback da transação. Silencioso se não houver transação ativa."""
+        try:
+            self.conn.execute("ROLLBACK")
+        except Exception as e:
+            pass
 
     def _init_schema(self):
         self.conn.execute("""
@@ -90,9 +98,9 @@ class DuckDBRepository:
         )""")
 
         # Índices criados em statements separados — DuckDB não suporta múltiplos em um execute()
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_clusters_symbol_ts ON liquidity_clusters(symbol, timestamp)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tape_symbol_ts ON tape_events(symbol, timestamp)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_dom_symbol_ts ON dom_levels(symbol, timestamp)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_price ON liquidity_clusters(price)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON liquidity_clusters(timestamp)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol_timestamp ON liquidity_clusters(symbol, timestamp)")
 
     def upsert_daily_report(self, symbol: str, date_str: str, report_text: str):
         self.conn.execute(

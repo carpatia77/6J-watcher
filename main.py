@@ -1,185 +1,281 @@
 from __future__ import annotations
-"""
-main.py
--------
-Entrypoint do 6J Watcher.
-
-- Sobe servidor HTTP em 127.0.0.1:8765
-- Recebe payloads do MQL bridge
-- Orquestra ingestão completa
-- Expõe /report e /hotspots para inspeção em tempo real
-"""
 import json
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
+import threading
+from datetime import datetime, timedelta
 
-from config import Config, BASE_DIR
-from ingestion import IngestionService
-from liquidity_matrix import LiquidityMatrix
-from narrator import Narrator
-from adaptive_pattern_engine import AdaptivePatternEngine
+import uvicorn
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Dict, Optional
+
+from config import Config
 from repository_duckdb import DuckDBRepository
+from liquidity_matrix import LiquidityMatrix
+from adaptive_pattern_engine import AdaptivePatternEngine  # não mais PatternEngine
+from narrator import Narrator
+from ingestion import IngestionService
 
-cfg     = Config()
-repo    = DuckDBRepository(cfg.db_path)
-matrix  = LiquidityMatrix(cfg.symbol, cfg.tick_size)
-engine  = AdaptivePatternEngine(profile_path=str(BASE_DIR / "profile.json"))
+# ── Inicialização ─────────────────────────────────────────────
+cfg = Config()
+repo = DuckDBRepository(cfg.db_path)
+matrix = LiquidityMatrix(cfg.symbol, cfg.tick_size)
+engine = AdaptivePatternEngine(cfg=cfg)
+narrator = Narrator(engine=engine, cfg=cfg)
+service = IngestionService(repo, matrix, engine, cfg, narrator=narrator) # Adicionado narrator
+start_time = time.time()
 
-# LLM Client — graceful degradation se NVIDIA_API_KEY não estiver configurada
-llm_client = None
-if cfg.nvidia_api_key:
+# ── FastAPI App ───────────────────────────────────────────────
+app = FastAPI(title="6J Watcher API", version="2.0.0")
+
+# CORS obrigatório para Streamlit (porta 8501) fazer requests ao backend (8765)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Em produção, restringir para a URL do Streamlit
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Pydantic Models ───────────────────────────────────────────
+class IngestPayload(BaseModel):
+    symbol: str
+    tape: List[Dict]
+    dom: List[Dict]
+    timestamp: Optional[str] = None
+
+# ── Endpoints ─────────────────────────────────────────────────
+@app.post("/ingest")
+def ingest(payload: IngestPayload):
+    """Recebe payload do MQL5 Bridge e processa via IngestionService."""
     try:
-        from llm_client import NvidiaLLMClient
-        llm_client = NvidiaLLMClient(
-            api_key=cfg.nvidia_api_key,
-            context_model=cfg.llm_context_model,
-            reasoning_model=cfg.llm_reasoning_model,
-            timeout=cfg.llm_timeout_seconds,
-            max_calls_per_hour=cfg.llm_max_calls_hour,
-        )
+        clusters = service.ingest_batch(payload.tape, payload.dom, payload.symbol)
+        narrator.invalidate_cache()
+        return {
+            "status": "ok",
+            "clusters": len(clusters),
+            "hotspots": matrix.hotspots(cfg.min_occurrences),
+        }
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"LLM client não disponível: {e}")
+        return {"status": "error", "detail": str(e)}, 500
 
-    if llm_client is not None:
-        import atexit
-        import asyncio
-        atexit.register(lambda: asyncio.run(llm_client.close()))
+@app.get("/hotspots")
+def get_hotspots(
+    symbol: str = Query(None),
+    min_occurrences: int = Query(3, ge=1)
+):
+    sym = symbol or cfg.symbol
+    hotspots = matrix.hotspots(min_occurrences)
+    # Enriquece com qualidade do sinal
+    for h in hotspots:
+        sig = h.get("dominant_signature", "unknown")
+        sess = h.get("session", "NEW_YORK")
+        quality = engine.get_signal_quality(sig, sess)
+        h["win_rate"] = quality["historical_win_rate"]
+        h["profit_factor"] = quality["profit_factor"]
+        h["tier"] = quality["tier"]
+        h["sample_size"] = quality["sample_size"]
+    return {"symbol": sym, "hotspots": hotspots}
 
-narrator = Narrator(engine=engine, cfg=cfg, llm_client=llm_client)
-service = IngestionService(repo, matrix, engine, cfg, narrator=narrator)
+@app.get("/report")
+def get_report(symbol: str = Query(None)):
+    sym = symbol or cfg.symbol
+    hotspots = matrix.hotspots(cfg.min_occurrences)
+    sig_dist = repo.signature_distribution(sym)
+    sess_analysis = repo.session_analysis(sym)
+    return narrator.daily_report(sym, hotspots, sig_dist, sess_analysis)
 
+@app.get("/confluences")
+def get_confluences(symbol: str = Query(None)):
+    sym = symbol or cfg.symbol
+    hotspots = matrix.hotspots(cfg.min_occurrences)
+    return {"confluences": narrator.detect_confluences(hotspots)}
 
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass  # silencia logs HTTP no terminal
+@app.get("/powermeter")
+def get_powermeter(
+    symbol: str = Query(None),
+    window_seconds: int = Query(30, ge=5, le=300)
+):
+    """Pressão compradora vs vendedora com tendência vs janela anterior."""
+    sym = symbol or cfg.symbol
+    now = datetime.utcnow()
+    cutoff = now - timedelta(seconds=window_seconds)
+    prev_cutoff = cutoff - timedelta(seconds=window_seconds)
 
-    def do_POST(self):
-        if self.path == "/ingest":
-            length  = int(self.headers.get("Content-Length", 0))
-            payload = self.rfile.read(length).decode("utf-8")
-            try:
-                data     = json.loads(payload)
-                clusters = service.ingest_batch(
-                    data.get("tape", []),
-                    data.get("dom",  []),
-                    data.get("symbol", cfg.symbol),
-                )
-                hotspots = matrix.hotspots(cfg.min_occurrences)
-                self._respond(200, {"status": "ok", "clusters": len(clusters), "hotspots": len(hotspots)})
-            except Exception as e:
-                self._respond(500, {"status": "error", "detail": str(e)})
-        else:
-            self._respond(404, {"error": "not found"})
+    buy_volume = sell_volume = 0
+    prev_buy = prev_sell = 0
+    trade_count = 0
 
-    def do_GET(self):
-        if self.path == "/hotspots":
-            h = matrix.hotspots(cfg.min_occurrences)
-            self._respond(200, {"hotspots": [{**x, "first": str(x["first"]), "last": str(x["last"])} for x in h]})
-        elif self.path == "/report":
-            hotspots = matrix.hotspots(cfg.min_occurrences)
-            sigdist  = repo.signature_distribution(cfg.symbol)
-            session  = repo.session_analysis(cfg.symbol)
-            report   = narrator.daily_report(cfg.symbol, hotspots, sigdist, session)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(report.encode("utf-8"))
-        else:
-            self._respond(404, {"error": "not found"})
+    # IMPORTANTE: atributo correto é tape_events (não tape_index)
+    with matrix.lock:
+        for price, buckets in matrix.tape_events.items() if hasattr(matrix, 'tape_events') else matrix.tape_index.items():
+            for bucket, tapes in buckets.items():
+                for tape in tapes:
+                    ts = tape.timestamp
+                    if ts >= cutoff:
+                        trade_count += 1
+                        if tape.side.value == "buy":
+                            buy_volume += tape.volume
+                        else:
+                            sell_volume += tape.volume
+                    elif ts >= prev_cutoff:
+                        if tape.side.value == "buy":
+                            prev_buy += tape.volume
+                        else:
+                            prev_sell += tape.volume
 
-    def _respond(self, code: int, body: dict):
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(body, default=str).encode("utf-8"))
+    current_delta = buy_volume - sell_volume
+    prev_delta = prev_buy - prev_sell
+    trend = current_delta - prev_delta
+    total_volume = buy_volume + sell_volume
 
+    if total_volume == 0:
+        dominant, dominant_pct = "NEUTRO", 50.0
+    else:
+        buy_pct = (buy_volume / total_volume) * 100
+        dominant_pct = max(buy_pct, 100 - buy_pct)
+        dominant = (
+            "COMPRA" if dominant_pct >= 55 and buy_pct > 50
+            else "VENDA" if dominant_pct >= 55
+            else "EQUILÍBRIO"
+        )
 
-def run_server():
-    server = ThreadingHTTPServer((cfg.host, cfg.port), Handler)
-    server.serve_forever()
+    if abs(trend) < total_volume * 0.1:
+        trend_label, trend_icon = "ESTÁVEL", "→"
+    elif trend > 0:
+        trend_label, trend_icon = "AUMENTANDO", "↗"
+    else:
+        trend_label, trend_icon = "DIMINUINDO", "↘"
 
+    return {
+        "symbol": sym,
+        "buy_volume": buy_volume,
+        "sell_volume": sell_volume,
+        "delta": current_delta,
+        "trend": trend,
+        "trend_label": trend_label,
+        "trend_icon": trend_icon,
+        "dominant": dominant,
+        "dominant_pct": dominant_pct,
+        "trade_count": trade_count,
+        "window_seconds": window_seconds,
+        "timestamp": now.isoformat(),
+    }
 
+@app.get("/tape/live")
+def get_tape_live(
+    symbol: str = Query(None),
+    limit: int = Query(15, ge=1, le=100)
+):
+    """Eventos recentes da fita."""
+    sym = symbol or cfg.symbol
+    events = []
+    with matrix.lock:
+        tapes = getattr(matrix, 'tape_events', getattr(matrix, 'tape_index', {}))
+        for price, buckets in tapes.items():
+            for bucket, t_list in buckets.items():
+                for tape in t_list:
+                    # Resolve cluster correspondente
+                    signature = "—"
+                    if hasattr(matrix, 'matrix'):
+                        clusters = matrix.matrix.get(price, {}).get(bucket, [])
+                        for c in clusters:
+                            if c.timestamp == tape.timestamp:
+                                signature = c.behavior_signature.value
+                                break
+                    
+                    events.append({
+                        "price": tape.price,
+                        "side": tape.side.value,
+                        "volume": tape.volume,
+                        "delta_ticks": 0,
+                        "signature": signature,
+                        "timestamp": tape.timestamp
+                    })
+                    
+    events.sort(key=lambda x: x["timestamp"], reverse=True)
+    return {"events": events[:limit]}
+
+@app.get("/dom/snapshot")
+def get_dom_snapshot(
+    symbol: str = Query(None),
+    delta_minutes: int = Query(2, ge=1, le=10),
+    levels: int = Query(10, ge=5, le=20)
+):
+    """DOM atual + delta vs N minutos atrás. Detecta icebergs."""
+    sym = symbol or cfg.symbol
+    now = datetime.utcnow()
+    cutoff_current = now - timedelta(minutes=1)
+    cutoff_past = now - timedelta(minutes=delta_minutes + 1)
+
+    current_dom = {}  # price -> {bid, ask}
+    past_dom = {}
+
+    with matrix.lock:
+        for price, buckets in matrix.dom_snapshots.items():
+            for bucket, doms in buckets.items():
+                for d in doms:
+                    if d.timestamp >= cutoff_current:
+                        current_dom.setdefault(d.price, {"bid": 0, "ask": 0})
+                        current_dom[d.price]["bid"] += d.bid_volume
+                        current_dom[d.price]["ask"] += d.ask_volume
+                    elif d.timestamp >= cutoff_past:
+                        past_dom.setdefault(d.price, {"bid": 0, "ask": 0})
+                        past_dom[d.price]["bid"] += d.bid_volume
+                        past_dom[d.price]["ask"] += d.ask_volume
+
+    # Calcula deltas e ordena
+    snapshot = []
+    for price in set(current_dom.keys()) | set(past_dom.keys()):
+        cur = current_dom.get(price, {"bid": 0, "ask": 0})
+        pas = past_dom.get(price, {"bid": 0, "ask": 0})
+        snapshot.append({
+            "price": price,
+            "bid_volume": cur["bid"],
+            "ask_volume": cur["ask"],
+            "bid_delta": cur["bid"] - pas["bid"],
+            "ask_delta": cur["ask"] - pas["ask"],
+        })
+
+    snapshot.sort(key=lambda x: x["price"], reverse=True)
+
+    return {
+        "symbol": sym,
+        "delta_minutes": delta_minutes,
+        "levels": snapshot[:levels * 2],
+    }
+
+@app.get("/health")
+def health():
+    """Endpoint de health check para monitoramento."""
+    try:
+        db_size_mb = os.path.getsize(cfg.db_path) / 1e6 if os.path.exists(cfg.db_path) else 0
+    except:
+        db_size_mb = 0
+    return {
+        "status": "ok",
+        "matrix_levels": len(matrix.active_levels),
+        "db_size_mb": round(db_size_mb, 2),
+        "uptime_seconds": int(time.time() - start_time),
+    }
+
+# ── Background Scheduler ─────────────────────────────────────
 def background_scheduler():
-    import logging
-    from datetime import datetime, timezone
-    
-    last_prune = time.time()
-    last_profile = time.time()
-    last_daily_report_date = None
-
+    """Executa manutenção periódica da matriz (Tier 2 da auditoria)."""
     while True:
-        time.sleep(30)
-        now = time.time()
-        
-        # 1. Prune stale data a cada 30 segundos
-        if now - last_prune >= 30:
-            try:
-                matrix.prune_stale_data(hours=4)
-            except Exception as e:
-                logging.getLogger(__name__).error(f"Erro no prune: {e}")
-            last_prune = now
-            
-        # 2. Gerar profile.json a cada 30 minutos (1800s)
-        if now - last_profile >= 1800:
-            try:
-                from signature_profiler import SignatureProfiler
-                profiler = SignatureProfiler(cfg.db_path)
-                profile_data = profiler.build_profile(cfg.symbol)
-                profiler.save_profile(profile_data, str(BASE_DIR / "profile.json"))
-                engine.profile = engine._load_profile(str(BASE_DIR / "profile.json"))
-                print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Profile recalibrado automaticamente.")
-                last_profile = now
-            except Exception as e:
-                logging.getLogger(__name__).error(f"[Profiler] Lock detectado, retry em 60s: {e}")
-                last_profile = now - 1740  # Tenta de novo em 60s
+        time.sleep(1800)  # 30 minutos
+        try:
+            matrix.prune_stale_data(hours=4)
+        except Exception as e:
+            print(f"[scheduler] prune error: {e}")
 
-        # 3. Gerar relatório de fechamento de mercado (Whale Dynamics)
-        # Assumindo fechamento CME às 22h UTC (17h EST)
-        current_dt = datetime.now(timezone.utc)
-        current_date_str = current_dt.strftime("%Y-%m-%d")
-        
-        if current_dt.hour == 22 and current_dt.minute < 5 and last_daily_report_date != current_date_str:
-            try:
-                hotspots = matrix.hotspots(cfg.min_occurrences)
-                sigdist  = repo.signature_distribution(cfg.symbol)
-                session  = repo.session_analysis(cfg.symbol)
-                
-                report_text = narrator.daily_report(cfg.symbol, hotspots, sigdist, session)
-                
-                if llm_client is not None:
-                    try:
-                        import asyncio
-                        llm_narrative = asyncio.run(narrator.generate_narrative(report_text))
-                        report_text += f"\n\n## Chief Quant Orchestrator (LLM Analysis)\n\n{llm_narrative}"
-                    except Exception as e_llm:
-                        logging.getLogger(__name__).error(f"Erro no LLM do fechamento: {e_llm}")
-
-                repo.upsert_daily_report(cfg.symbol, current_date_str, report_text)
-                print(f"[{current_dt.strftime('%H:%M:%S')}] Relatório Institucional de Fechamento salvo no DB.")
-                last_daily_report_date = current_date_str
-            except Exception as e:
-                logging.getLogger(__name__).error(f"Erro no relatório de fechamento: {e}")
-
+# ── Main ──────────────────────────────────────────────────────
+def main():
+    threading.Thread(target=background_scheduler, daemon=True).start()
+    print(f"[6J Watcher] FastAPI server running on {cfg.host}:{cfg.port}")
+    print(f"[6J Watcher] Docs em http://{cfg.host}:{cfg.port}/docs")
+    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info")
 
 if __name__ == "__main__":
-    threading.Thread(target=run_server, daemon=True).start()
-    threading.Thread(target=background_scheduler, daemon=True).start()
-    
-    print(f"6J Watcher running on http://{cfg.host}:{cfg.port}")
-    print(f"  POST /ingest  — recebe payloads do MQL bridge")
-    print(f"  GET  /hotspots — retorna hotspots atuais em JSON")
-    print(f"  GET  /report   — retorna relatório Markdown")
-    print(f"  DB   {cfg.db_path}")
-    print(f"  Scheduler ativo (Prune: 30s | Profile: 30m | Report: 22h UTC)")
-    print()
-    
-    # Mantém o processo vivo e pode printar status esporádico
-    while True:
-        time.sleep(60)
-        hotspots = matrix.hotspots(cfg.min_occurrences)
-        if hotspots:
-            from datetime import datetime, timezone
-            print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
-                  f"{len(hotspots)} hotspot(s) ativos — top: {json.dumps(hotspots[0], default=str)}")
+    main()
