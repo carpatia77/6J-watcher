@@ -93,6 +93,18 @@ class AdaptivePatternEngine:
             else:
                 return BehaviorSignature.ICEBERG_ACCUMULATION  # Muralha de compra absorvendo vendas
 
+        # 4. SPOOFING WALL (Tier 3)
+        # Volume alto no nível (> p75), mas imbalance MUITO BAIXO (< p50) e preço parado.
+        # Indica liquidez que aparece e desaparece — parede fictícia para enganar algoritmos.
+        if vol_p >= 75 and imb_p < 50 and abs(delta) == 0:
+            return BehaviorSignature.SPOOFING_WALL
+
+        # 5. LIQUIDITY VACUUM (Tier 3)
+        # Volume muito baixo (< p50) mas o preço deslocou significativamente (>= 2 ticks).
+        # O mercado se moveu com resistência mínima — book vazio, gap de liquidez.
+        if vol_p < 50 and abs(delta) >= 2:
+            return BehaviorSignature.LIQUIDITY_VACUUM
+
         return BehaviorSignature.UNKNOWN
 
     def post_classify(self, price: float, clusters: List[LiquidityCluster]) -> BehaviorSignature:

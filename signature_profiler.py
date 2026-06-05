@@ -63,6 +63,10 @@ class SignatureProfiler:
         mfe_mae_calc AS (
             SELECT 
                 *,
+                -- Direção inferida por signature type (hardcoded).
+                -- TODO: Após coleta de dados reais de produção, substituir por
+                -- inferência via cumdelta ou dominant_side do cluster para capturar
+                -- contextos onde ICEBERG_ACCUMULATION ocorre em cenário bearish.
                 CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'magnet_effect') THEN TRUE ELSE FALSE END AS is_bullish,
                 CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'magnet_effect') 
                      THEN max_future_price - c_price 

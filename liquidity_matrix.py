@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import defaultdict, Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import mean
 import threading
 from typing import Callable, Dict, List, Optional
@@ -153,7 +153,7 @@ class LiquidityMatrix:
         return sorted(out, key=lambda x: x["occurrences"], reverse=True)
 
     def prune_stale_data(self, hours: int = 4):
-        cutoff_ts = datetime.utcnow() - timedelta(hours=hours)
+        cutoff_ts = datetime.now(timezone.utc) - timedelta(hours=hours)
         cutoff_str = cutoff_ts.strftime("%Y-%m-%d %H:%M")
         with self.lock:
             for p in list(self.matrix.keys()):

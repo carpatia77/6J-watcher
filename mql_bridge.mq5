@@ -93,8 +93,8 @@ int OnInit()
       Print("[ERRO] Falha ao inicializar ClusterDelta DLL");
    }
    
-   // Gera client ID e inscreve para receber stream
-   clusterdelta_client = "CDPT" + StringSubstr(IntegerToString(TimeLocal()),7,3) + DoubleToString(MathAbs(MathRand()%10),0);
+   // Gera client ID com alta entropia para evitar colisão entre terminais
+   clusterdelta_client = "CDPT" + StringSubstr(IntegerToString(TimeLocal()),7,3) + IntegerToString(GetTickCount() % 1000) + IntegerToString(MathAbs(MathRand() % 1000));
    string cmt = AccountInfoString(ACCOUNT_COMPANY);
    int acnt = (int)AccountInfoInteger(ACCOUNT_LOGIN);
    
@@ -128,8 +128,17 @@ void OnTimer()
       int dummy = 0;
       string test = Online_Data(dummy, clusterdelta_client);
       if(dummy == 0 && StringLen(test) < 5) {
-         Print("[ALERTA] ClusterDelta DLL pode estar offline ou sem dados. Tentando reconexão...");
+         Print("[ALERTA] ClusterDelta DLL pode estar offline ou sem dados. Tentando reconexão completa...");
          Online_Init(cd_session_id);
+         // Re-subscrever é obrigatório — sem isso, Online_Data retorna vazio indefinidamente
+         string cmt = AccountInfoString(ACCOUNT_COMPANY);
+         int acnt = (int)AccountInfoInteger(ACCOUNT_LOGIN);
+         Online_Subscribe(cd_session_id, clusterdelta_client, Symbol(), Period(),
+                          TimeToString(TimeCurrent()), TimeToString(TimeCurrent()),
+                          GetSymbolName(), TimeToString(0), "0", "5.63", 0,
+                          TimeToString(D'2017.01.01 00:00'), TimeToString(D'2017.01.01 00:00'),
+                          cmt, acnt);
+         Print("[ALERTA] Reconexão completa executada (Init + Subscribe).");
       }
       last_dll_check = TimeCurrent();
    }
@@ -172,7 +181,9 @@ void ProcessClusterDeltaStream()
              continue; 
          }
          
-         // Se o packet anterior era "DOM", este packet contém os níveis divididos por '|'
+         // INVARIANTE: DOM_saved==1 significa que o packet anterior era literalmente "DOM".
+         // O flag é SEMPRE resetado para 0 ao final deste bloco, garantindo que
+         // mesmo dois blocos DOM consecutivos sem tape entre eles sejam processados corretamente.
          if(DOM_saved == 1) {
             for(int k = 0; k < ts; k++) {
                if(StringSplit(internal[k], '|', domdata) >= 2) {
@@ -185,13 +196,14 @@ void ProcessClusterDeltaStream()
                      int bid_vol = is_ask ? 0 : vol;
                      int ask_vol = is_ask ? vol : 0;
                      
-                     // Formata JSON do DOM
                      if(dom_count < 200) {
                         dom_parts[dom_count++] = "{\"timestamp\":\"" + JsonEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)) + "\"," +
                                       "\"price\":" + JsonNumber(price) + "," +
                                       "\"level_index\":" + IntegerToString(index) + "," +
                                       "\"bid_volume\":" + IntegerToString(bid_vol) + "," +
                                       "\"ask_volume\":" + IntegerToString(ask_vol) + "}";
+                     } else {
+                        Print("[ALERTA] Buffer DOM overflow (200): eventos descartados neste ciclo");
                      }
                   }
                }
@@ -214,6 +226,8 @@ void ProcessClusterDeltaStream()
                               "\"price\":" + JsonNumber(price) + "," +
                               "\"volume\":" + IntegerToString(vol) + "," +
                               "\"side\":\"" + JsonEscape(side) + "\"}";
+            } else {
+               Print("[ALERTA] Buffer Tape overflow (500): eventos descartados neste ciclo");
             }
          } else if(DEBUG_PARSE_ERRORS && StringLen(packet[i]) > 5) {
             Print("[DEBUG] Formato inesperado no tape: '", packet[i], "' | Campos: ", ts);

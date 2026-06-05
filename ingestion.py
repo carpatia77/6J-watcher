@@ -27,7 +27,15 @@ class IngestionService:
         self.engine = engine
         self.cfg    = cfg
         self.narrator = narrator
-        self.last_closed_price = None
+
+        # Inicializa cursor de preço do DuckDB para evitar delta=0 no cold start
+        row = repo.conn.execute(
+            "SELECT price FROM tape_events WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+            [cfg.symbol]
+        ).fetchone()
+        self.last_closed_price = row[0] if row else None
+        if self.last_closed_price is not None:
+            logging.info(f"[IngestionService] Cold start: last_closed_price={self.last_closed_price} (do DuckDB)")
 
     def ingest_batch(self, tape_rows: List[Dict], dom_rows: List[Dict], symbol: str) -> List[LiquidityCluster]:
         tape   = parse_tape_rows(tape_rows, symbol)
@@ -96,16 +104,18 @@ class IngestionService:
             self.matrix.build_from_events(tape, dom, clusters=clusters)
 
             # Post-classify recurring levels (now based on persisted data)
-            # Use batch_id to restrict refinement to NEW clusters only —
-            # clusters from previous batches are already persisted with their own signature
+            # post_classify uses ALL clusters at the level to decide the refined signature,
+            # but the assignment is restricted to NEW clusters only (current batch).
+            # This prevents stale in-memory mutations while preserving the statistical decision.
             current_batch_id = clusters[0].batch_id if clusters else None
             hotspots = self.matrix.hotspots(self.cfg.min_occurrences)
             for h in hotspots:
                 level_clusters = self.matrix.active_levels.get(h["price"], [])
                 refined = self.engine.post_classify(h["price"], level_clusters)
-                for c in level_clusters:
-                    if current_batch_id and c.batch_id == current_batch_id:
-                        c.behavior_signature = refined
+                if current_batch_id:
+                    for c in level_clusters:
+                        if c.batch_id == current_batch_id:
+                            c.behavior_signature = refined
         except Exception:
             self.matrix.restore(snap)
             raise

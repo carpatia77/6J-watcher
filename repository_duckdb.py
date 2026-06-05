@@ -81,6 +81,11 @@ class DuckDBRepository:
             PRIMARY KEY (symbol, price)
         )""")
 
+        # Índices criados em statements separados — DuckDB não suporta múltiplos em um execute()
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_clusters_symbol_ts ON liquidity_clusters(symbol, timestamp)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tape_symbol_ts ON tape_events(symbol, timestamp)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_dom_symbol_ts ON dom_levels(symbol, timestamp)")
+
     # ── Inserts ──────────────────────────────────────────────────────────────
 
     def insert_tape_events(self, events: List[TapeEvent]):
