@@ -43,6 +43,23 @@ Mediante a engenharia reversa do código do `#TSDOM` oficial da ClusterDelta, ma
 3. **Time & Sales:** Se o chunk possui 3 partes, é um registro T&S. Extraímos Timestamp Epoch, Agressor (A/B mapeado para buy/sell com inversão semântica MT5), Preço e **Volume CME Real**.
 4. **Depth of Market:** Se o header `"DOM"` for interceptado, o próximo chunk carrega todo o book (níveis separados por `|`), iterado mapeando o Bid/Ask Real da bolsa e respeitando o corte configurável de `DOM_LEVELS`.
 
+## Iteração 3: Platinum Tier (Otimizações de Robutez e Performance)
+Na auditoria final, três aprimoramentos opcionais, porém altamente recomendados para estabilidade 24/7, foram identificados e aplicados:
+
+### Melhoria 1: Logging Condicional de Erros
+- **Ação:** Implementação do input `DEBUG_PARSE_ERRORS`.
+- **Resultado:** Se a ClusterDelta mudar silenciosamente o formato de um pacote no futuro, o log reportará os formatos inesperados do parser, acelerando drasticamente o debug.
+
+### Melhoria 2: Health Check da Conexão DLL
+- **Ação:** Adição de rotina assíncrona executada a cada 60s no `OnTimer`.
+- **Resultado:** O EA monitora proativamente a viabilidade da comunicação com o daemon da ClusterDelta (verificando len < 5 e flag 0) e tenta um `Online_Init` automaticamente se julgar que a conexão quebrou.
+
+### Otimização 3: Redução de Fragmentação (Array Builder)
+- **Ação:** Substituição de concatenação infinita (`tape_result += "..."`) pela pré-alocação estática (500 elementos de Tape e 200 de DOM), seguidos do novo builder funcional `JoinJsonArray()`.
+- **Resultado:** A MVM (Metaquotes Virtual Machine) deixará de fazer milhares de pequenos reallocs de memória na string a cada 200ms, anulando a fragmentação de RAM em execuções de longo prazo.
+
+---
+
 ## Status Final
-**Gold Tier (100% Produção).** 
-O `mql_bridge.mq5` não depende mais de nada provido pela MetaQuotes a não ser o timer e o renderizador HTTP. É um leitor de memory buffer da DLL ClusterDelta, despachando Order Flow assíncrono para o ecossistema Python com resiliência contra lags de servidor.
+**Platinum Tier (100% Produção).** 
+O `mql_bridge.mq5` não depende mais de nada provido pela MetaQuotes a não ser o timer e o renderizador HTTP. É um leitor de memory buffer da DLL ClusterDelta, despachando Order Flow assíncrono para o ecossistema Python com resiliência contra lags de servidor e com monitoramento de health check nativo.

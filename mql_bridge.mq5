@@ -17,6 +17,7 @@ input string SYMBOL_OVERRIDE = "";      // Vazio = usa _Symbol
 input bool   USE_FUTURES_MAPPING = true;// Mapeia spot -> futuro CME
 input int    TIMER_MS        = 200;     // frequência de envio (5x por segundo)
 input int    DOM_LEVELS      = 10;      // quantos níveis do DOM capturar
+input bool   DEBUG_PARSE_ERRORS = false;// Habilitar para logar formatos inesperados
 
 //--- Variáveis globais
 string pending_queue[];
@@ -26,6 +27,7 @@ int    retry_attempts = 3;
 int    stats_sent     = 0;
 int    stats_failed   = 0;
 datetime last_success = 0;
+datetime last_dll_check = 0; // Para health check proativo
 
 int    cd_session_id  = 0; // ID da sessão da DLL
 string clusterdelta_client = ""; // Gerado no OnInit
@@ -44,6 +46,16 @@ string JsonEscape(string s) {
 
 string JsonNumber(double n) {
    return DoubleToString(n, _Digits);
+}
+
+string JoinJsonArray(const string &arr[], int count) {
+   if(count == 0) return "[]";
+   string res = "[";
+   for(int i = 0; i < count; i++) {
+      res += arr[i];
+      if(i < count - 1) res += ",";
+   }
+   return res + "]";
 }
 
 string GetSymbolName() {
@@ -110,6 +122,17 @@ void OnTimer()
 {
    ProcessPendingQueue();
    ProcessClusterDeltaStream();
+   
+   // Health check proativo da conexão com a DLL
+   if(TimeCurrent() - last_dll_check > 60) {
+      int dummy = 0;
+      string test = Online_Data(dummy, clusterdelta_client);
+      if(dummy == 0 && StringLen(test) < 5) {
+         Print("[ALERTA] ClusterDelta DLL pode estar offline ou sem dados. Tentando reconexão...");
+         Online_Init(cd_session_id);
+      }
+      last_dll_check = TimeCurrent();
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -126,11 +149,13 @@ void ProcessClusterDeltaStream()
    int all = StringSplit(stream, ':', allpackets);
    if(all == 0 || allpackets[0] != clusterdelta_client) return;
    
-   string tape_result = "[";
-   bool tape_first = true;
+   string tape_parts[];
+   ArrayResize(tape_parts, 500);
+   int tape_count = 0;
    
-   string dom_result = "[";
-   bool dom_first = true;
+   string dom_parts[];
+   ArrayResize(dom_parts, 200);
+   int dom_count = 0;
    
    int DOM_saved = 0;
    
@@ -157,17 +182,17 @@ void ProcessClusterDeltaStream()
                   int vol = (int)StringToInteger(domdata[1]);
                   
                   if(index < DOM_LEVELS) {
-                     if(!dom_first) dom_result += ",";
                      int bid_vol = is_ask ? 0 : vol;
                      int ask_vol = is_ask ? vol : 0;
                      
                      // Formata JSON do DOM
-                     dom_result += "{\"timestamp\":\"" + JsonEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)) + "\"," +
-                                   "\"price\":" + JsonNumber(price) + "," +
-                                   "\"level_index\":" + IntegerToString(index) + "," +
-                                   "\"bid_volume\":" + IntegerToString(bid_vol) + "," +
-                                   "\"ask_volume\":" + IntegerToString(ask_vol) + "}";
-                     dom_first = false;
+                     if(dom_count < 200) {
+                        dom_parts[dom_count++] = "{\"timestamp\":\"" + JsonEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)) + "\"," +
+                                      "\"price\":" + JsonNumber(price) + "," +
+                                      "\"level_index\":" + IntegerToString(index) + "," +
+                                      "\"bid_volume\":" + IntegerToString(bid_vol) + "," +
+                                      "\"ask_volume\":" + IntegerToString(ask_vol) + "}";
+                     }
                   }
                }
             }
@@ -184,18 +209,20 @@ void ProcessClusterDeltaStream()
             double price = StringToDouble(StringSubstr(internal[1], 11));
             int vol = (int)StringToInteger(internal[2]);
             
-            if(!tape_first) tape_result += ",";
-            tape_result += "{\"timestamp\":\"" + JsonEscape(timestamp_str) + "\"," +
-                           "\"price\":" + JsonNumber(price) + "," +
-                           "\"volume\":" + IntegerToString(vol) + "," +
-                           "\"side\":\"" + JsonEscape(side) + "\"}";
-            tape_first = false;
+            if(tape_count < 500) {
+               tape_parts[tape_count++] = "{\"timestamp\":\"" + JsonEscape(timestamp_str) + "\"," +
+                              "\"price\":" + JsonNumber(price) + "," +
+                              "\"volume\":" + IntegerToString(vol) + "," +
+                              "\"side\":\"" + JsonEscape(side) + "\"}";
+            }
+         } else if(DEBUG_PARSE_ERRORS && StringLen(packet[i]) > 5) {
+            Print("[DEBUG] Formato inesperado no tape: '", packet[i], "' | Campos: ", ts);
          }
       }
    }
    
-   tape_result += "]";
-   dom_result += "]";
+   string tape_result = JoinJsonArray(tape_parts, tape_count);
+   string dom_result = JoinJsonArray(dom_parts, dom_count);
    
    if(tape_result == "[]" && dom_result == "[]") return;
    
