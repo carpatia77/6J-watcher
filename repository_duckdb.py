@@ -81,10 +81,25 @@ class DuckDBRepository:
             PRIMARY KEY (symbol, price)
         )""")
 
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_reports (
+            symbol      VARCHAR,
+            date        DATE,
+            report_text TEXT,
+            PRIMARY KEY (symbol, date)
+        )""")
+
         # Índices criados em statements separados — DuckDB não suporta múltiplos em um execute()
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_clusters_symbol_ts ON liquidity_clusters(symbol, timestamp)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tape_symbol_ts ON tape_events(symbol, timestamp)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_dom_symbol_ts ON dom_levels(symbol, timestamp)")
+
+    def upsert_daily_report(self, symbol: str, date_str: str, report_text: str):
+        self.conn.execute(
+            """INSERT INTO daily_reports (symbol, date, report_text) VALUES (?, ?, ?)
+               ON CONFLICT (symbol, date) DO UPDATE SET report_text = EXCLUDED.report_text""",
+            [symbol, date_str, report_text]
+        )
 
     # ── Inserts ──────────────────────────────────────────────────────────────
 

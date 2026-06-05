@@ -47,6 +47,9 @@ class SignatureProfiler:
                 c.behavior_signature,
                 c.session,
                 (c.total_bid + c.total_ask) AS total_vol,
+                c.total_bid,
+                c.total_ask,
+                c.cumdelta,
                 ABS(c.total_bid - c.total_ask) AS imbalance,
                 c.price AS c_price,
                 -- O GROUP BY garante 1 linha por cluster, agregando eventos na janela
@@ -58,16 +61,18 @@ class SignatureProfiler:
              AND t.timestamp > c.timestamp 
              AND t.timestamp <= c.timestamp + {interval_clause}
             WHERE c.symbol = ? AND c.timestamp > ?
-            GROUP BY c.timestamp, c.behavior_signature, c.session, c.total_bid, c.total_ask, c.price
+            GROUP BY c.timestamp, c.behavior_signature, c.session, c.total_bid, c.total_ask, c.cumdelta, c.price
         ),
         mfe_mae_calc AS (
             SELECT 
                 *,
-                -- Direção inferida por signature type (hardcoded).
-                -- TODO: Após coleta de dados reais de produção, substituir por
-                -- inferência via cumdelta ou dominant_side do cluster para capturar
-                -- contextos onde ICEBERG_ACCUMULATION ocorre em cenário bearish.
-                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'magnet_effect') THEN TRUE ELSE FALSE END AS is_bullish,
+                -- Direção inferida dinamicamente baseada em microestrutura (cumdelta).
+                -- Representa a verdadeira pressão direcional institucional independentemente
+                -- da assinatura classificada.
+                CASE WHEN cumdelta > 0 THEN TRUE 
+                     WHEN cumdelta < 0 THEN FALSE 
+                     ELSE (CASE WHEN total_bid > total_ask THEN TRUE ELSE FALSE END) 
+                END AS is_bullish,
                 CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'magnet_effect') 
                      THEN max_future_price - c_price 
                      ELSE c_price - min_future_price END AS mfe,

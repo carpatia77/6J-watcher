@@ -96,18 +96,84 @@ def run_server():
     server.serve_forever()
 
 
+def background_scheduler():
+    import logging
+    from datetime import datetime, timezone
+    
+    last_prune = time.time()
+    last_profile = time.time()
+    last_daily_report_date = None
+
+    while True:
+        time.sleep(30)
+        now = time.time()
+        
+        # 1. Prune stale data a cada 30 segundos
+        if now - last_prune >= 30:
+            try:
+                matrix.prune_stale_data(hours=4)
+            except Exception as e:
+                logging.getLogger(__name__).error(f"Erro no prune: {e}")
+            last_prune = now
+            
+        # 2. Gerar profile.json a cada 30 minutos (1800s)
+        if now - last_profile >= 1800:
+            try:
+                from signature_profiler import SignatureProfiler
+                profiler = SignatureProfiler(cfg.db_path)
+                profile_data = profiler.build_profile(cfg.symbol)
+                profiler.save_profile(profile_data, str(BASE_DIR / "profile.json"))
+                engine.profile = engine._load_profile(str(BASE_DIR / "profile.json"))
+                print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Profile recalibrado automaticamente.")
+            except Exception as e:
+                logging.getLogger(__name__).error(f"Erro no profiler automático: {e}")
+            last_profile = now
+
+        # 3. Gerar relatório de fechamento de mercado (Whale Dynamics)
+        # Assumindo fechamento CME às 22h UTC (17h EST)
+        current_dt = datetime.now(timezone.utc)
+        current_date_str = current_dt.strftime("%Y-%m-%d")
+        
+        if current_dt.hour == 22 and current_dt.minute < 5 and last_daily_report_date != current_date_str:
+            try:
+                hotspots = matrix.hotspots(cfg.min_occurrences)
+                sigdist  = repo.signature_distribution(cfg.symbol)
+                session  = repo.session_analysis(cfg.symbol)
+                
+                report_text = narrator.daily_report(cfg.symbol, hotspots, sigdist, session)
+                
+                if llm_client is not None:
+                    try:
+                        import asyncio
+                        llm_narrative = asyncio.run(narrator.generate_narrative(report_text))
+                        report_text += f"\n\n## Chief Quant Orchestrator (LLM Analysis)\n\n{llm_narrative}"
+                    except Exception as e_llm:
+                        logging.getLogger(__name__).error(f"Erro no LLM do fechamento: {e_llm}")
+
+                repo.upsert_daily_report(cfg.symbol, current_date_str, report_text)
+                print(f"[{current_dt.strftime('%H:%M:%S')}] Relatório Institucional de Fechamento salvo no DB.")
+                last_daily_report_date = current_date_str
+            except Exception as e:
+                logging.getLogger(__name__).error(f"Erro no relatório de fechamento: {e}")
+
+
 if __name__ == "__main__":
     threading.Thread(target=run_server, daemon=True).start()
+    threading.Thread(target=background_scheduler, daemon=True).start()
+    
     print(f"6J Watcher running on http://{cfg.host}:{cfg.port}")
     print(f"  POST /ingest  — recebe payloads do MQL bridge")
     print(f"  GET  /hotspots — retorna hotspots atuais em JSON")
     print(f"  GET  /report   — retorna relatório Markdown")
     print(f"  DB   {cfg.db_path}")
+    print(f"  Scheduler ativo (Prune: 30s | Profile: 30m | Report: 22h UTC)")
     print()
+    
+    # Mantém o processo vivo e pode printar status esporádico
     while True:
-        time.sleep(30)
-        matrix.prune_stale_data(hours=4)
+        time.sleep(60)
         hotspots = matrix.hotspots(cfg.min_occurrences)
         if hotspots:
-            print(f"[{__import__('datetime').datetime.utcnow().strftime('%H:%M:%S')}] "
+            from datetime import datetime, timezone
+            print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
                   f"{len(hotspots)} hotspot(s) ativos — top: {hotspots[0]}")
