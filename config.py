@@ -44,4 +44,4 @@ class Config:
         for name, (start, end) in self.session_utc.items():
             if start <= hour_utc < end:
                 return name
-        return "off_hours"
+        return "OFF_HOURS"

@@ -42,6 +42,11 @@ if cfg.nvidia_api_key:
         import logging
         logging.getLogger(__name__).warning(f"LLM client não disponível: {e}")
 
+    if llm_client is not None:
+        import atexit
+        import asyncio
+        atexit.register(lambda: asyncio.run(llm_client.close()))
+
 narrator = Narrator(engine=engine, cfg=cfg, llm_client=llm_client)
 service = IngestionService(repo, matrix, engine, cfg, narrator=narrator)
 
@@ -176,5 +181,6 @@ if __name__ == "__main__":
         hotspots = matrix.hotspots(cfg.min_occurrences)
         if hotspots:
             from datetime import datetime, timezone
+            import json
             print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] "
-                  f"{len(hotspots)} hotspot(s) ativos — top: {hotspots[0]}")
+                  f"{len(hotspots)} hotspot(s) ativos — top: {json.dumps(hotspots[0], default=str)}")

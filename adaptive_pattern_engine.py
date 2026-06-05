@@ -81,7 +81,14 @@ class AdaptivePatternEngine:
         if vol_p >= 75 and imb_p >= 75 and abs(delta) >= 2:
             return BehaviorSignature.BREAKOUT_GENUINE
 
-        # 3. ICEBERG ACCUMULATION / DISTRIBUTION (Tier 2)
+        # 3. SPOOFING WALL (Tier 3)
+        # Volume alto no nível (> p75), mas imbalance MUITO BAIXO (< p50) e preço parado.
+        # Indica liquidez que aparece e desaparece — parede fictícia para enganar algoritmos.
+        # Deve vir ANTES de ICEBERG para não ser engolido pelo imb_p < 90.
+        if vol_p >= 75 and imb_p < 50 and abs(delta) == 0:
+            return BehaviorSignature.SPOOFING_WALL
+
+        # 4. ICEBERG ACCUMULATION / DISTRIBUTION (Tier 2)
         # Volume alto executando no mesmo nível (delta == 0), sem imbalance extremo.
         # Semântica CORRETA: se os compradores estão agredindo mas o preço não sobe,
         # há uma parede PASSIVA DE VENDA no ASK -> ICEBERG_DISTRIBUTION (vendedor).
@@ -92,12 +99,6 @@ class AdaptivePatternEngine:
                 return BehaviorSignature.ICEBERG_DISTRIBUTION  # Muralha de venda absorvendo compras
             else:
                 return BehaviorSignature.ICEBERG_ACCUMULATION  # Muralha de compra absorvendo vendas
-
-        # 4. SPOOFING WALL (Tier 3)
-        # Volume alto no nível (> p75), mas imbalance MUITO BAIXO (< p50) e preço parado.
-        # Indica liquidez que aparece e desaparece — parede fictícia para enganar algoritmos.
-        if vol_p >= 75 and imb_p < 50 and abs(delta) == 0:
-            return BehaviorSignature.SPOOFING_WALL
 
         # 5. LIQUIDITY VACUUM (Tier 3)
         # Volume muito baixo (< p50) mas o preço deslocou significativamente (>= 2 ticks).

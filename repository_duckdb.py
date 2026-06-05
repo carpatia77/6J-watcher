@@ -165,10 +165,10 @@ class DuckDBRepository:
 
     def recent_tape(self, symbol: str, minutes: int = 60) -> List:
         return self.conn.execute(
-            "SELECT * FROM tape_events WHERE symbol=? AND timestamp > NOW() - INTERVAL ? MINUTE ORDER BY timestamp DESC",
-            [symbol, minutes]).fetchall()
+            f"SELECT * FROM tape_events WHERE symbol=? AND timestamp > CURRENT_TIMESTAMP AT TIME ZONE 'UTC' - INTERVAL {int(minutes)} MINUTE ORDER BY timestamp DESC",
+            [symbol]).fetchall()
 
     def recent_dom(self, symbol: str, minutes: int = 60) -> List:
         return self.conn.execute(
-            "SELECT * FROM dom_levels WHERE symbol=? AND timestamp > NOW() - INTERVAL ? MINUTE ORDER BY timestamp DESC",
-            [symbol, minutes]).fetchall()
+            f"SELECT * FROM dom_levels WHERE symbol=? AND timestamp > CURRENT_TIMESTAMP AT TIME ZONE 'UTC' - INTERVAL {int(minutes)} MINUTE ORDER BY timestamp DESC",
+            [symbol]).fetchall()
