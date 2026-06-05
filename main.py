@@ -125,9 +125,10 @@ def background_scheduler():
                 profiler.save_profile(profile_data, str(BASE_DIR / "profile.json"))
                 engine.profile = engine._load_profile(str(BASE_DIR / "profile.json"))
                 print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Profile recalibrado automaticamente.")
+                last_profile = now
             except Exception as e:
-                logging.getLogger(__name__).error(f"Erro no profiler automático: {e}")
-            last_profile = now
+                logging.getLogger(__name__).error(f"[Profiler] Lock detectado, retry em 60s: {e}")
+                last_profile = now - 1740  # Tenta de novo em 60s
 
         # 3. Gerar relatório de fechamento de mercado (Whale Dynamics)
         # Assumindo fechamento CME às 22h UTC (17h EST)

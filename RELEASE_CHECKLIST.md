@@ -19,8 +19,10 @@
          → "profile.json recalibrado — thresholds atualizados para sessão X"
          → engine.profile em memória deve ter timestamp mais recente que o boot
 
-[ ] 9.3  Simular lock conflict do DuckDB durante recalibração:
-         → Scheduler deve logar warning e continuar (não crashar a daemon thread)
+[ ] 9.3a Simular lock conflict do DuckDB durante recalibração:
+         → Log deve mostrar: "[Profiler] Lock detectado, retry em 60s"
+[ ] 9.3b Sistema continua respondendo GET /hotspots durante o lock simulado
+[ ] 9.3c Profile é recalibrado com sucesso no ciclo seguinte após lock liberar
 
 [ ] 9.4  Verificar geração do daily report às 22h UTC:
          SELECT date, LENGTH(report_text) FROM daily_reports ORDER BY date DESC LIMIT 1
