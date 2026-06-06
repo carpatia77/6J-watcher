@@ -31,20 +31,20 @@ class DuckDBRepository:
         """Commit da transação. Silencioso se não houver transação ativa."""
         try:
             self.conn.execute("COMMIT")
-        except Exception as e:
+        except Exception:
             pass
 
     def rollback(self):
         """Rollback da transação. Silencioso se não houver transação ativa."""
         try:
             self.conn.execute("ROLLBACK")
-        except Exception as e:
+        except Exception:
             pass
 
     def close(self):
         """Fecha conexão e libera file lock (crítico no Windows)."""
         try:
-            self.conn.execute("CHECKPOINT")  # força flush antes de fechar
+            self.conn.execute("CHECKPOINT")
             self.conn.close()
         except Exception:
             pass
@@ -104,7 +104,6 @@ class DuckDBRepository:
             reliability_score  DOUBLE,
             PRIMARY KEY (symbol, price)
         )""")
-
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS daily_reports (
             symbol      VARCHAR,
@@ -113,10 +112,13 @@ class DuckDBRepository:
             PRIMARY KEY (symbol, date)
         )""")
 
-        # Índices criados em statements separados — DuckDB não suporta múltiplos em um execute()
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_price ON liquidity_clusters(price)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON liquidity_clusters(timestamp)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol_timestamp ON liquidity_clusters(symbol, timestamp)")
+        # Índices em liquidity_clusters
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_price ON liquidity_clusters(price)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_timestamp ON liquidity_clusters(timestamp)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts ON liquidity_clusters(symbol, timestamp)")
+
+        # Índice crítico em tape_events — sem isso o JOIN do SignatureProfiler é O(n²)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts ON tape_events(symbol, timestamp)")
 
     def upsert_daily_report(self, symbol: str, date_str: str, report_text: str):
         self.conn.execute(
@@ -125,7 +127,7 @@ class DuckDBRepository:
             [symbol, date_str, report_text]
         )
 
-    # ── Inserts ──────────────────────────────────────────────────────────────
+    # ── Inserts ───────────────────────────────────────────────────────────────
 
     def insert_tape_events(self, events: List[TapeEvent]):
         rows = [[e.symbol, e.timestamp, e.price, e.volume, e.side.value, _j(e.raw)] for e in events]
@@ -149,19 +151,19 @@ class DuckDBRepository:
 
     def upsert_key_level(self, level: KeyLevel):
         self.conn.execute(
-            """INSERT INTO key_levels 
-               VALUES (?,?,?,?,?,?,?,?) 
-               ON CONFLICT (symbol, price) DO UPDATE SET 
-               occurrences=EXCLUDED.occurrences, 
-               first_seen=EXCLUDED.first_seen, 
-               last_seen=EXCLUDED.last_seen, 
-               dominant_signature=EXCLUDED.dominant_signature, 
-               days_active=EXCLUDED.days_active, 
+            """INSERT INTO key_levels
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT (symbol, price) DO UPDATE SET
+               occurrences=EXCLUDED.occurrences,
+               first_seen=EXCLUDED.first_seen,
+               last_seen=EXCLUDED.last_seen,
+               dominant_signature=EXCLUDED.dominant_signature,
+               days_active=EXCLUDED.days_active,
                reliability_score=EXCLUDED.reliability_score""",
             [level.symbol, level.price, level.occurrences, level.first_seen,
              level.last_seen, level.dominant_signature, level.days_active, level.reliability_score])
 
-    # ── Queries ──────────────────────────────────────────────────────────────
+    # ── Queries ───────────────────────────────────────────────────────────────
 
     def signature_distribution(self, symbol: str) -> List:
         return self.conn.execute(
