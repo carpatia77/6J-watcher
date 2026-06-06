@@ -40,6 +40,10 @@ class Config:
     llm_timeout_seconds: float = 5.0
     llm_max_calls_hour:  int   = 100
 
+    # --- Skill paths (Narrator CoT) ---
+    profile_path:       str = str(BASE_DIR / "data" / "profile_calibrated.json")
+    variance_report_path: str = str(BASE_DIR / "data" / "variance_report.json")
+
     def session_for(self, hour_utc: int) -> str:
         for name, (start, end) in self.session_utc.items():
             if start <= hour_utc < end:

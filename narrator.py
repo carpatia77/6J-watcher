@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Tuple
 
 from adaptive_pattern_engine import AdaptivePatternEngine
 from config import Config
+from narrator_skill import SkillContextBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -428,20 +429,19 @@ class Narrator:
             return self._fallback_narrative(symbol, hotspots)
 
     def _build_narrative_prompt(self, symbol: str, hotspots: List[Dict]) -> str:
-        # Remove campos não-serializáveis para o prompt
-        clean = []
-        for h in hotspots:
-            clean.append({k: v for k, v in h.items() if k != "_quality"})
-
-        return (
-            f"Você é um analista institucional de Order Flow para {symbol}.\n\n"
-            f"HOTSPOTS DETECTADOS:\n{json.dumps(clean[:10], indent=2, default=str)}\n\n"
-            f"GERE UMA NARRATIVA:\n"
-            f"1. Resumo executivo (2 frases)\n"
-            f"2. Níveis críticos de defesa/acumulação\n"
-            f"3. Setup de maior probabilidade para próxima sessão\n"
-            f"4. Riscos a monitorar\n\n"
-            f"FORMATO: Markdown, tom analítico, máximo 300 palavras."
+        builder = SkillContextBuilder(
+            profile_path  = self.cfg.profile_path,
+            variance_path = self.cfg.variance_report_path,
+            cfg           = self.cfg,
+        )
+        hour_utc = datetime.now(timezone.utc).hour
+        session  = self.cfg.session_for(hour_utc)
+        return builder.build(
+            symbol      = symbol,
+            hotspots    = hotspots,
+            session     = session,
+            confluences = self.detect_confluences(hotspots),
+            hour_utc    = hour_utc,
         )
 
     def _fallback_narrative(self, symbol: str, hotspots: List[Dict]) -> str:

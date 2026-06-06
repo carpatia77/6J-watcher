@@ -1,0 +1,5 @@
+
+data/*.db
+data/*.dbn.zst
+data/*.json
+!data/.gitkeep
