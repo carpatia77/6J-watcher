@@ -12,7 +12,7 @@ from backtest.backtest_runner import BacktestRunner
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-API_KEY = "db-RiQAXJTPv69L4fTkWLNVut7NyjhjX"
+API_KEY = os.getenv("DATABENTO_API_KEY", "")
 
 # O usuario pediu de 2025-10-05 ate 2026-06-05 (8 meses)
 CHUNKS = [
