@@ -24,7 +24,6 @@ class DatabentoLoader:
             logger.info(f"Usando cache: {cache_file}")
             return cache_file
         logger.info(f"Baixando {symbol} de {start} a {end} ({schema})...")
-        # ✅ API correta: get_range com path= para salvar em disco
         self.client.timeseries.get_range(
             dataset="GLBX.MDP3",
             symbols=[symbol],
@@ -34,15 +33,22 @@ class DatabentoLoader:
             stype_in="continuous",
             path=str(cache_file),
         )
-        logger.info(f"Download concluído: {cache_file}")
+        logger.info(f"Download concluido: {cache_file}")
         return cache_file
 
     def stream_records(self, file_path: Path) -> Iterator:
-        """Streaming verdadeiro — processa registro a registro sem RAM completa."""
-        import databento as db
-        with db.DBNStore.from_file(str(file_path)) as store:
-            for record in store:
-                yield record
+        """
+        Streaming compativel com qualquer versao do databento-python.
+        Usa context manager se disponivel (>= 0.30), senão itera direto.
+        RAM: DBNStore faz lazy loading — nao carrega o arquivo inteiro.
+        """
+        store = db.DBNStore.from_file(str(file_path))
+        # Suporte a context manager depende da versao instalada
+        if hasattr(store, '__exit__'):
+            with store:
+                yield from store
+        else:
+            yield from store
 
     def get_metadata(self, file_path: Path) -> dict:
         store = db.DBNStore.from_file(str(file_path))
