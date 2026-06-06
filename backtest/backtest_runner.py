@@ -82,14 +82,11 @@ class BacktestRunner:
             "processing_time_seconds": 0.0, "report": "",
         }
 
-        import atexit
-        atexit.register(self._cleanup)
-
     def _cleanup(self):
         try:
             self.repo.conn.execute("CHECKPOINT")
             self.repo.conn.close()
-            logger.info("[BacktestRunner] Conexão DuckDB fechada via atexit.")
+            logger.info("[BacktestRunner] Conexão DuckDB fechada.")
         except Exception:
             pass
 
@@ -134,6 +131,9 @@ class BacktestRunner:
                     self.metrics["total_batches"], self.metrics["total_batches"] / elapsed,
                     self.metrics["total_clusters"])
 
+            if self.metrics["total_batches"] % 500 == 0:
+                self.repo.conn.execute("CHECKPOINT")
+
         if pbar:
             pbar.n = pbar.total
             pbar.refresh()
@@ -144,6 +144,8 @@ class BacktestRunner:
             label, elapsed_s, self.metrics["total_batches"], self.metrics["total_clusters"])
 
         # ─ SignatureProfiler ─────────────────────────────────────────
+        self.repo.commit()
+        
         if self.skip_profiler:
             logger.info("[Profiler] skip_profiler=True — pulando calibragem MFE/MAE.")
         else:

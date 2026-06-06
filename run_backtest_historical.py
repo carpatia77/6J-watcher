@@ -73,12 +73,7 @@ def main():
             logger.error("Abortando backtest para preservar dados ja processados.")
             break
 
-        # CHECKPOINT só após runner.run() retornar — conexão já liberada pelo profiler
-        try:
-            runner.repo.conn.execute("CHECKPOINT")
-            logger.info(f"Checkpoint concluido para {start_dt} a {end_dt}")
-        except Exception:
-            logger.warning("Checkpoint falhou — dados ainda seguros no WAL.")
+        # CHECKPOINT removido daqui pois o runner já o faz periodicamente e no finally
 
         elapsed = (time.time() - t0) / 3600
         try:
