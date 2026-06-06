@@ -26,118 +26,131 @@ class SignatureProfiler:
         if 13 <= hour < 22: return "NEW_YORK"
         return "OFF_HOURS"
 
-    def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: Optional[float] = None, since: Optional[str] = None, filter_dates: Optional[list[str]] = None) -> dict:
+    def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: Optional[float] = None, since: Optional[str] = None, filter_dates: Optional[list] = None) -> dict:
         """
         Executa o pipeline de perfilamento empírico.
-        Toda a agregação, percentis e regras direcionais rodam nativamente no motor C++ do DuckDB.
-        Zero risco de OOM na RAM do Python (O(resultado)).
+        Toda a agregação, percentis e regras direcionais rodam nativamente no DuckDB.
         """
         if not isinstance(horizon_minutes, int) or not (1 <= horizon_minutes <= 1440):
             raise ValueError("horizon_minutes must be an int between 1 and 1440")
-            
+
         tick_size = tick_size or self.cfg.tick_size
         interval_clause = f"INTERVAL '{horizon_minutes}' MINUTE"
-        
+
         if since:
             anchor_dt = datetime.strptime(since, '%Y-%m-%d')
             cutoff = (anchor_dt - timedelta(days=lookback_days)).strftime('%Y-%m-%d %H:%M:%S')
         else:
             cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d %H:%M:%S')
-            
+
         filter_clause = ""
         if filter_dates:
             dates_str = ",".join([f"'{d}'" for d in filter_dates])
             filter_clause = f"AND CAST(c.timestamp AS DATE) IN ({dates_str})"
-        
-        # 1. CÁLCULO VETORIAL DE MFE/MAE NO DUCKDB E WIN/LOSS
-        base_query = f"""
+
+        # Uma única query CTE — evita o .query() relacional que mudou de API no DuckDB 0.10+
+        full_query = f"""
         WITH cluster_excursions AS (
-            SELECT 
+            SELECT
                 c.timestamp,
                 c.behavior_signature,
                 c.session,
-                (c.total_bid + c.total_ask) AS total_vol,
+                (c.total_bid + c.total_ask)           AS total_vol,
                 c.total_bid,
                 c.total_ask,
                 c.cumdelta,
-                ABS(c.total_bid - c.total_ask) AS imbalance,
-                c.price AS c_price,
-                -- O GROUP BY garante 1 linha por cluster, agregando eventos na janela
-                COALESCE(MAX(t.price), c.price) AS max_future_price,
-                COALESCE(MIN(t.price), c.price) AS min_future_price
+                ABS(c.total_bid - c.total_ask)         AS imbalance,
+                c.price                                AS c_price,
+                COALESCE(MAX(t.price), c.price)        AS max_future_price,
+                COALESCE(MIN(t.price), c.price)        AS min_future_price
             FROM liquidity_clusters c
-            LEFT JOIN tape_events t 
-              ON c.symbol = t.symbol 
-             AND t.timestamp > c.timestamp 
-             AND t.timestamp <= c.timestamp + {interval_clause}
-            WHERE c.symbol = ? AND c.timestamp > ? {filter_clause}
-            GROUP BY c.timestamp, c.behavior_signature, c.session, c.total_bid, c.total_ask, c.cumdelta, c.price
+            LEFT JOIN tape_events t
+              ON  c.symbol = t.symbol
+              AND t.timestamp > c.timestamp
+              AND t.timestamp <= c.timestamp + {interval_clause}
+            WHERE c.symbol = $symbol AND c.timestamp > $cutoff {filter_clause}
+            GROUP BY c.timestamp, c.behavior_signature, c.session,
+                     c.total_bid, c.total_ask, c.cumdelta, c.price
         ),
         mfe_mae_calc AS (
-            SELECT 
-                *,
-                -- Direção inferida dinamicamente baseada em microestrutura (cumdelta).
-                -- Representa a verdadeira pressão direcional institucional independentemente
-                -- da assinatura classificada.
-                CASE WHEN cumdelta > 0 THEN TRUE 
-                     WHEN cumdelta < 0 THEN FALSE 
-                     ELSE (CASE WHEN total_bid > total_ask THEN TRUE ELSE FALSE END) 
+            SELECT *,
+                CASE WHEN cumdelta > 0 THEN TRUE
+                     WHEN cumdelta < 0 THEN FALSE
+                     ELSE (total_bid > total_ask)
                 END AS is_bullish,
-                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine') 
-                     THEN max_future_price - c_price 
+                CASE WHEN behavior_signature IN ('iceberg_accumulation','breakout_genuine')
+                     THEN max_future_price - c_price
                      ELSE c_price - min_future_price END AS mfe,
-                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine') 
-                     THEN c_price - min_future_price 
+                CASE WHEN behavior_signature IN ('iceberg_accumulation','breakout_genuine')
+                     THEN c_price - min_future_price
                      ELSE max_future_price - c_price END AS mae
             FROM cluster_excursions
+        ),
+        scored AS (
+            SELECT *,
+                CASE WHEN mfe > ABS(mae) AND mfe > 0 THEN 1 ELSE 0 END AS win,
+                CASE WHEN mfe > 0 THEN mfe ELSE 0 END                  AS gross_profit,
+                CASE WHEN mae < 0 THEN ABS(mae) ELSE 0 END             AS gross_loss
+            FROM mfe_mae_calc
+        ),
+        sig_stats AS (
+            SELECT
+                behavior_signature,
+                session,
+                COUNT(*)              AS cluster_count,
+                SUM(win)              AS wins,
+                SUM(gross_profit)     AS total_gross_profit,
+                SUM(gross_loss)       AS total_gross_loss,
+                AVG(mfe)              AS avg_mfe
+            FROM scored
+            GROUP BY behavior_signature, session
+        ),
+        perc_stats AS (
+            SELECT
+                session,
+                COUNT(*)                                  AS session_count,
+                QUANTILE_CONT(total_vol,  0.50)           AS vol_p50,
+                QUANTILE_CONT(total_vol,  0.75)           AS vol_p75,
+                QUANTILE_CONT(total_vol,  0.90)           AS vol_p90,
+                QUANTILE_CONT(total_vol,  0.95)           AS vol_p95,
+                QUANTILE_CONT(total_vol,  0.99)           AS vol_p99,
+                QUANTILE_CONT(imbalance,  0.50)           AS imb_p50,
+                QUANTILE_CONT(imbalance,  0.75)           AS imb_p75,
+                QUANTILE_CONT(imbalance,  0.90)           AS imb_p90,
+                QUANTILE_CONT(imbalance,  0.95)           AS imb_p95,
+                QUANTILE_CONT(imbalance,  0.99)           AS imb_p99
+            FROM scored
+            GROUP BY session
         )
-        SELECT 
-            *,
-            CASE WHEN mfe > ABS(mae) AND mfe > 0 THEN 1 ELSE 0 END AS win,
-            CASE WHEN mfe > 0 THEN mfe ELSE 0 END AS gross_profit,
-            CASE WHEN mae < 0 THEN ABS(mae) ELSE 0 END AS gross_loss
-        FROM mfe_mae_calc
+        SELECT 'sig' AS result_type,
+               behavior_signature, session,
+               cluster_count, wins, total_gross_profit, total_gross_loss, avg_mfe,
+               NULL::DOUBLE AS session_count,
+               NULL::DOUBLE AS vol_p50, NULL::DOUBLE AS vol_p75, NULL::DOUBLE AS vol_p90,
+               NULL::DOUBLE AS vol_p95, NULL::DOUBLE AS vol_p99,
+               NULL::DOUBLE AS imb_p50, NULL::DOUBLE AS imb_p75, NULL::DOUBLE AS imb_p90,
+               NULL::DOUBLE AS imb_p95, NULL::DOUBLE AS imb_p99
+        FROM sig_stats
+        UNION ALL
+        SELECT 'perc' AS result_type,
+               NULL AS behavior_signature, session,
+               NULL::BIGINT AS cluster_count, NULL::BIGINT AS wins,
+               NULL::DOUBLE AS total_gross_profit, NULL::DOUBLE AS total_gross_loss,
+               NULL::DOUBLE AS avg_mfe,
+               session_count,
+               vol_p50, vol_p75, vol_p90, vol_p95, vol_p99,
+               imb_p50, imb_p75, imb_p90, imb_p95, imb_p99
+        FROM perc_stats
         """
-        
+
         try:
-            base_rel = self.conn.execute(base_query, [symbol, cutoff])
-            
-            sig_query = """
-                SELECT 
-                    behavior_signature,
-                    session,
-                    COUNT(*) AS cluster_count,
-                    SUM(win) AS wins,
-                    SUM(gross_profit) AS total_gross_profit,
-                    SUM(gross_loss) AS total_gross_loss,
-                    AVG(mfe) AS avg_mfe
-                FROM base_result
-                GROUP BY behavior_signature, session
-            """
-            sig_df = base_rel.query("base_result", sig_query).fetchdf()
-            
-            perc_query = """
-                SELECT 
-                    session,
-                    COUNT(*) AS session_count,
-                    QUANTILE_CONT(total_vol, 0.50) AS vol_p50,
-                    QUANTILE_CONT(total_vol, 0.75) AS vol_p75,
-                    QUANTILE_CONT(total_vol, 0.90) AS vol_p90,
-                    QUANTILE_CONT(total_vol, 0.95) AS vol_p95,
-                    QUANTILE_CONT(total_vol, 0.99) AS vol_p99,
-                    QUANTILE_CONT(imbalance, 0.50) AS imb_p50,
-                    QUANTILE_CONT(imbalance, 0.75) AS imb_p75,
-                    QUANTILE_CONT(imbalance, 0.90) AS imb_p90,
-                    QUANTILE_CONT(imbalance, 0.95) AS imb_p95,
-                    QUANTILE_CONT(imbalance, 0.99) AS imb_p99
-                FROM base_result
-                GROUP BY session
-            """
-            perc_df = base_rel.query("base_result", perc_query).fetchdf()
-            
+            rows = self.conn.execute(full_query, {"symbol": symbol, "cutoff": cutoff}).fetchdf()
         except Exception as e:
             logger.error(f"[Profiler] DuckDB execution failed: {e}")
             raise
+
+        sig_df  = rows[rows["result_type"] == "sig"].copy()
+        perc_df = rows[rows["result_type"] == "perc"].copy()
 
         if perc_df.empty:
             return {"error": "No historical data found."}
@@ -146,68 +159,63 @@ class SignatureProfiler:
 
     def _get_fallback_thresholds(self, sess: str) -> dict:
         fallbacks = {
-            "ASIAN":     {"vol_percentiles": {"90": 20, "75": 10}, "imb_percentiles": {"90": 10, "75": 5}},
-            "LONDON":    {"vol_percentiles": {"90": 35, "75": 20}, "imb_percentiles": {"90": 20, "75": 10}},
-            "NEW_YORK":  {"vol_percentiles": {"90": 50, "75": 30}, "imb_percentiles": {"90": 30, "75": 15}},
-            "OFF_HOURS": {"vol_percentiles": {"90": 15, "75": 5},  "imb_percentiles": {"90": 5,  "75": 2}}
+            "ASIAN":     {"vol_percentiles": {"90": 10, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
+            "LONDON":    {"vol_percentiles": {"90": 11, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
+            "NEW_YORK":  {"vol_percentiles": {"90": 11, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
+            "OFF_HOURS": {"vol_percentiles": {"90": 10, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}}
         }
         return fallbacks.get(sess, fallbacks["OFF_HOURS"])
 
     def _generate_empirical_percentiles(self, sig_df, perc_df) -> dict:
-        """
-        Monta o profile a partir das agregações colunares do DuckDB.
-        """
         profile = {
             "metadata": {"generated_at": datetime.now().isoformat(), "type": "empirical_percentiles_duckdb"},
             "signatures": {},
             "thresholds": {}
         }
 
-        # Estatísticas de Win Rate por Assinatura e Sessão
         for _, row in sig_df.iterrows():
-            sig = row['behavior_signature']
-            sess = row['session']
-            count = row['cluster_count']
-            if count == 0: continue
-            
-            wins = row['wins']
-            gross_profit = row['total_gross_profit']
-            gross_loss = row['total_gross_loss']
-            pf = gross_profit / gross_loss if gross_loss > 0 else float('inf')
-            
+            sig   = row["behavior_signature"]
+            sess  = row["session"]
+            count = row["cluster_count"]
+            if not sig or not sess or not count or count == 0:
+                continue
+            wins         = row["wins"] or 0
+            gross_profit = row["total_gross_profit"] or 0
+            gross_loss   = row["total_gross_loss"] or 0
+            pf = gross_profit / gross_loss if gross_loss and gross_loss > 0 else float("inf")
             profile["signatures"][f"{sig}_{sess}"] = {
-                "count": int(count),
-                "win_rate": round(wins / count, 3),
+                "count":       int(count),
+                "win_rate":    round(wins / count, 3),
                 "profit_factor": round(pf, 2),
-                "avg_mfe": round(row['avg_mfe'], 5)
+                "avg_mfe":     round(row["avg_mfe"] or 0, 5)
             }
 
-        # Tabelas de Percentis para o Motor em Tempo Real
-        MIN_SAMPLES_FOR_PERCENTILES = 100
-        
+        MIN_SAMPLES = 100
         for _, row in perc_df.iterrows():
-            sess = row['session']
-            count = row['session_count']
-            
-            if count < MIN_SAMPLES_FOR_PERCENTILES:
-                logger.warning(f"[Profiler] Sessão {sess} tem apenas {count} amostras; usando fallback thresholds")
+            sess  = row["session"]
+            count = row["session_count"]
+            if not sess:
+                continue
+            if not count or count < MIN_SAMPLES:
+                logger.warning(f"[Profiler] Sessao {sess} tem {count} amostras; usando fallback")
                 profile["thresholds"][sess] = self._get_fallback_thresholds(sess)
                 continue
-            
             profile["thresholds"][sess] = {
                 "vol_percentiles": {
-                    "50": float(row['vol_p50']), "75": float(row['vol_p75']), 
-                    "90": float(row['vol_p90']), "95": float(row['vol_p95']), "99": float(row['vol_p99'])
+                    "50": float(row["vol_p50"]), "75": float(row["vol_p75"]),
+                    "90": float(row["vol_p90"]), "95": float(row["vol_p95"]),
+                    "99": float(row["vol_p99"])
                 },
                 "imb_percentiles": {
-                    "50": float(row['imb_p50']), "75": float(row['imb_p75']), 
-                    "90": float(row['imb_p90']), "95": float(row['imb_p95']), "99": float(row['imb_p99'])
+                    "50": float(row["imb_p50"]), "75": float(row["imb_p75"]),
+                    "90": float(row["imb_p90"]), "95": float(row["imb_p95"]),
+                    "99": float(row["imb_p99"])
                 },
             }
 
         return profile
 
     def save_profile(self, profile: dict, path: str = "profile.json"):
-        with open(path, 'w') as f:
+        with open(path, "w") as f:
             json.dump(profile, f, indent=2, default=str)
         logger.info(f"[Profiler] Empirical Profile saved to {path}")
