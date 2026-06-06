@@ -4,12 +4,38 @@ import sys
 import logging
 from datetime import date
 
+# ── Logging robusto ──────────────────────────────────────────────────────────
+# Força stdout sem buffer (equivale a python -u) — crítico no Windows/Antigravity
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+def _setup_logging():
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    # Handler 1 — terminal com flush forçado em cada linha
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(fmt)
+    sh.terminator = "\n"
+
+    # Handler 2 — arquivo persistente (sobrevive a crash do terminal)
+    os.makedirs("./data", exist_ok=True)
+    fh = logging.FileHandler("./data/backtest_run.log", mode="a", encoding="utf-8")
+    fh.setFormatter(fmt)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    # Evita handlers duplicados se módulo for reimportado
+    if not root.handlers:
+        root.addHandler(sh)
+        root.addHandler(fh)
+
+_setup_logging()
+
 # Garante import do modulo backtest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from backtest.backtest_runner import BacktestRunner
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 API_KEY = os.getenv("DATABENTO_API_KEY", "")
@@ -27,7 +53,15 @@ CHUNKS = [
 ]
 
 def main():
+    logger.info("=" * 60)
     logger.info("Iniciando orquestrador de backtest historico (8 meses)")
+    logger.info(f"Log salvo em: ./data/backtest_run.log")
+    logger.info("=" * 60)
+
+    if not API_KEY:
+        logger.error("DATABENTO_API_KEY nao definida — abortando.")
+        sys.exit(1)
+
     runner = BacktestRunner(
         api_key=API_KEY,
         db_path="./data/backtest_8months.db",
@@ -38,19 +72,21 @@ def main():
 
     import time
     for i, (start_dt, end_dt) in enumerate(CHUNKS):
-        logger.info(f"\n=============================================")
-        logger.info(f"PROCESSANDO MÊS {i+1}/8: {start_dt} → {end_dt}")
+        logger.info(f"")
+        logger.info(f"=============================================")
+        logger.info(f"PROCESSANDO MES {i+1}/8: {start_dt} -> {end_dt}")
         logger.info(f"=============================================")
         t0 = time.time()
         try:
             runner.run(start=start_dt, end=end_dt, symbol="6J")
             runner.repo.conn.execute("CHECKPOINT")
-            logger.info(f"Checkpoint concluído para {start_dt} a {end_dt}")
-        except Exception as e:
-            logger.error(f"Erro no mês {start_dt}: {e}")
+            logger.info(f"Checkpoint concluido para {start_dt} a {end_dt}")
+        except Exception:
+            # logger.exception inclui stack trace completo no log
+            logger.exception(f"CRASH no mes {start_dt} — traceback completo:")
+            logger.error("Abortando backtest para preservar dados ja processados.")
             break
         finally:
-            # NOVO: força flush parcial mas não fecha — mantém para próximo mês
             try:
                 runner.repo.conn.execute("CHECKPOINT")
             except Exception:
@@ -58,29 +94,39 @@ def main():
 
         elapsed = (time.time() - t0) / 3600
         # Relatório parcial após cada mês
-        count = runner.repo.conn.execute(
-            "SELECT COUNT(*), SUM(CASE WHEN behavior_signature!='unknown' THEN 1 ELSE 0 END) "
-            "FROM liquidity_clusters WHERE symbol='6J' AND timestamp >= ? AND timestamp < ?",
-            [str(start_dt), str(end_dt)]
-        ).fetchone()
-        
-        total, classified = count[0], count[1]
-        pct = (classified / total * 100) if total and total > 0 else 0.0
-        
-        logger.info(f"  Mês {start_dt.strftime('%b/%Y')}: {total} clusters, "
-                    f"{pct:.1f}% classificados, "
-                    f"processado em {elapsed:.4f}h")
+        try:
+            count = runner.repo.conn.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN behavior_signature!='unknown' THEN 1 ELSE 0 END) "
+                "FROM liquidity_clusters WHERE symbol='6J' AND timestamp >= ? AND timestamp < ?",
+                [str(start_dt), str(end_dt)]
+            ).fetchone()
+            total, classified = count[0], count[1]
+            pct = (classified / total * 100) if total and total > 0 else 0.0
+            logger.info(
+                f"  Mes {start_dt.strftime('%b/%Y')}: {total} clusters, "
+                f"{pct:.1f}% classificados, "
+                f"processado em {elapsed:.4f}h"
+            )
+        except Exception:
+            logger.exception("Erro ao gerar relatorio parcial do mes:")
 
         # Opção de parar após cada mês para inspecionar o dashboard
         if os.getenv("BACKTEST_INTERACTIVE", "0") == "1":
-            input(f"\n[PAUSA] Mês {i+1} concluído. "
-                  f"Abra o dashboard e pressione Enter para continuar...")
+            input(
+                f"\n[PAUSA] Mes {i+1} concluido. "
+                f"Abra o dashboard e pressione Enter para continuar..."
+            )
 
     logger.info("Salvando relatorio consolidado...")
-    runner.save_report("./data/backtest_8months_report.md")
-    # NOVO: fechar explicitamente ao final de tudo
-    runner.repo.close()
-    logger.info("Orquestrador concluido.")
+    try:
+        runner.save_report("./data/backtest_8months_report.md")
+    except Exception:
+        logger.exception("Erro ao salvar relatorio final:")
+    finally:
+        runner.repo.close()
+        logger.info("Conexao DuckDB encerrada.")
+
+    logger.info("Orquestrador concluido. Veja ./data/backtest_run.log para historico completo.")
 
 if __name__ == "__main__":
     main()
