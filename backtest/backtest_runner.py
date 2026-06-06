@@ -52,18 +52,6 @@ class BacktestRunner:
         self.profile_path = profile_path
         self.skip_dom = skip_dom
 
-        import atexit
-        atexit.register(self._cleanup)
-
-    def _cleanup(self):
-        """Garante fechamento limpo mesmo em crash — libera file lock no Windows."""
-        try:
-            self.repo.conn.execute("CHECKPOINT")
-            self.repo.conn.close()
-            logger.info("[BacktestRunner] Conexão DuckDB fechada via atexit.")
-        except Exception:
-            pass
-
         # Loader e adapter Databento
         self.loader = DatabentoLoader(api_key)
         self.adapter = DatabentoAdapter(self.loader, batch_size_seconds=batch_size_seconds)
@@ -98,6 +86,18 @@ class BacktestRunner:
             "processing_time_seconds": 0.0,
             "report": "",
         }
+
+        import atexit
+        atexit.register(self._cleanup)
+
+    def _cleanup(self):
+        """Garante fechamento limpo mesmo em crash — libera file lock no Windows."""
+        try:
+            self.repo.conn.execute("CHECKPOINT")
+            self.repo.conn.close()
+            logger.info("[BacktestRunner] Conexão DuckDB fechada via atexit.")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # API pública

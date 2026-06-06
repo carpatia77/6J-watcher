@@ -51,7 +51,10 @@ def main():
             break
         finally:
             # NOVO: força flush parcial mas não fecha — mantém para próximo mês
-            runner.repo.conn.execute("CHECKPOINT")
+            try:
+                runner.repo.conn.execute("CHECKPOINT")
+            except Exception:
+                pass
 
         elapsed = (time.time() - t0) / 3600
         # Relatório parcial após cada mês
