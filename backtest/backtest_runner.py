@@ -82,15 +82,14 @@ class BacktestRunner:
             "processing_time_seconds": 0.0, "report": "",
         }
 
-    def _cleanup(self):
-        try:
-            self.repo.conn.execute("CHECKPOINT")
-            self.repo.conn.close()
-            logger.info("[BacktestRunner] Conexão DuckDB fechada.")
-        except Exception:
-            pass
 
     def run(self, start: date, end: date, symbol: str = "6J", skip_download: bool = False) -> Dict:
+        # Reset por mês — métricas acumuladas distorciam relatório e checkpoint timing
+        self.metrics = {
+            "total_batches": 0, "total_tape_events": 0, "total_dom_levels": 0,
+            "total_clusters": 0, "signature_counts": {}, "hotspots": [],
+            "processing_time_seconds": 0.0, "report": "",
+        }
         logger.info("=== Backtest iniciado: %s -> %s ===", start, end)
         wall_start = time.time()
 
