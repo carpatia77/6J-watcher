@@ -1,5 +1,24 @@
 
+# Secrets — NUNCA commitar
+.env
+.env.local
+*.env
+
+# Dados gerados pelo backtest
 data/*.db
 data/*.dbn.zst
 data/*.json
 !data/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Output gerado
+output/
