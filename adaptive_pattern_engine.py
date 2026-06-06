@@ -10,7 +10,7 @@ class AdaptivePatternEngine:
     """
     
     TIER_1 = ["breakout_genuine", "defense_line", "absorption_passive"] # Alta Confiança Direcional/Reversão
-    TIER_2 = ["iceberg_accumulation", "iceberg_distribution", "magnet_effect"] # Contexto/Acumulação
+    TIER_2 = ["iceberg_accumulation", "iceberg_distribution"] # Contexto/Acumulação
     TIER_3 = ["spoofing_wall", "liquidity_vacuum"] # Filtros/Ruído (Geralmente descartados no live trading)
 
     def __init__(self, profile_path: str = "profile.json", tick_size: Optional[float] = None, cfg: Optional[Config] = None):
@@ -112,8 +112,6 @@ class AdaptivePatternEngine:
         """
         Elevação de Tier baseada em Confluência Histórica (Recorrência).
         Regra de precedência: DEFENSE_LINE > assinatura dominante > UNKNOWN.
-        Nota: MAGNET_EFFECT requer rastreamento de convergência de preço ao longo do tempo
-        e não pode ser inferido apenas por contagem de toques. Tratado como metadata futura.
         """
         if not clusters:
             return BehaviorSignature.UNKNOWN
@@ -132,7 +130,7 @@ class AdaptivePatternEngine:
             return BehaviorSignature.DEFENSE_LINE
 
         # Retorna a assinatura dominante preservando informação valiosa.
-        # Ex: 3x ICEBERG_ACCUMULATION retorna ICEBERG_ACCUMULATION, não MAGNET_EFFECT.
+        # Ex: 3x ICEBERG_ACCUMULATION retorna ICEBERG_ACCUMULATION.
         sigs = [c.behavior_signature for c in clusters if c.behavior_signature != BehaviorSignature.UNKNOWN]
         if not sigs:
             return BehaviorSignature.UNKNOWN

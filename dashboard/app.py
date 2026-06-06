@@ -18,6 +18,7 @@ Selecione uma das abas no menu lateral:
 
 - **📊 Pré-Session** — Análise preparatória (heatmap, hotspots, confluências, narrativa LLM)
 - **🔴 Live Session** — Monitoramento em tempo real (Tape, Powermeter, DOM, Hotspots ativos)
+- **📈 Backtest Analytics** — Visualização dos dados históricos massivos do Databento
 
 ---
 

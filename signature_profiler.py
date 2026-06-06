@@ -73,10 +73,10 @@ class SignatureProfiler:
                      WHEN cumdelta < 0 THEN FALSE 
                      ELSE (CASE WHEN total_bid > total_ask THEN TRUE ELSE FALSE END) 
                 END AS is_bullish,
-                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'magnet_effect') 
+                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine') 
                      THEN max_future_price - c_price 
                      ELSE c_price - min_future_price END AS mfe,
-                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'magnet_effect') 
+                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine') 
                      THEN c_price - min_future_price 
                      ELSE max_future_price - c_price END AS mae
             FROM cluster_excursions

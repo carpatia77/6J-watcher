@@ -44,7 +44,7 @@ class BacktestRunner:
         api_key: str,
         db_path: str = "./data/backtest.db",
         profile_path: str = "./data/backtest_profile.json",
-        batch_size_seconds: int = 60,
+        batch_size_seconds: int = 300,
     ):
         self.api_key = api_key
         self.db_path = db_path
@@ -114,12 +114,12 @@ class BacktestRunner:
         file_path = self._resolve_file(start, end, symbol, skip_download)
 
         # Stream de batches → pipeline
-        for tape_rows, dom_rows in self.adapter.stream_batches(file_path):
-            clusters = self.service.ingest_batch(tape_rows, dom_rows, symbol)
+        for tape_rows, _ in self.adapter.stream_batches(file_path, skip_dom=True):
+            clusters = self.service.ingest_batch(tape_rows, [], symbol)
 
             self.metrics["total_batches"]     += 1
             self.metrics["total_tape_events"] += len(tape_rows)
-            self.metrics["total_dom_levels"]  += len(dom_rows)
+            self.metrics["total_dom_levels"]  += 0
             self.metrics["total_clusters"]    += len(clusters)
 
             for c in clusters:

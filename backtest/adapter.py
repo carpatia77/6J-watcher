@@ -18,7 +18,7 @@ class DatabentoAdapter:
         self.batch_size_seconds = batch_size_seconds
         self.reconstructor = BookReconstructor(depth=10)
 
-    def stream_batches(self, file_path: Path) -> Iterator[Tuple[List[Dict], List[Dict]]]:
+    def stream_batches(self, file_path: Path, skip_dom: bool = False) -> Iterator[Tuple[List[Dict], List[Dict]]]:
         current_tape: List[Dict] = []
         current_dom: List[Dict] = []
         batch_start_ns = None
@@ -40,7 +40,7 @@ class DatabentoAdapter:
                 current_tape.append(tape_event)
 
             snapshot = self.reconstructor.process_record(record)
-            if snapshot:
+            if snapshot and not skip_dom:
                 current_dom.extend(snapshot.to_dom_rows())
 
         if current_tape or current_dom:

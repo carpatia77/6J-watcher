@@ -20,6 +20,9 @@ class DuckDBRepository:
     def __init__(self, db_path: str):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = duckdb.connect(db_path)
+        self.conn.execute("PRAGMA threads=4")
+        self.conn.execute("PRAGMA memory_limit='2GB'")
+        self.conn.execute("PRAGMA wal_autocheckpoint='100GB'")
         self._init_schema()
 
     def begin(self):

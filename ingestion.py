@@ -103,19 +103,41 @@ class IngestionService:
         try:
             self.matrix.build_from_events(tape, dom, clusters=clusters)
 
+            # Captura as assinaturas originais para detectar elevações (ex: DEFENSE_LINE)
+            original_signatures: dict[int, str] = {id(c): c.behavior_signature.value for c in clusters}
+
             # Post-classify recurring levels (now based on persisted data)
-            # post_classify uses ALL clusters at the level to decide the refined signature,
-            # but the assignment is restricted to NEW clusters only (current batch).
-            # This prevents stale in-memory mutations while preserving the statistical decision.
             current_batch_id = clusters[0].batch_id if clusters else None
-            hotspots = self.matrix.hotspots(self.cfg.min_occurrences)
-            for h in hotspots:
-                level_clusters = self.matrix.active_levels.get(h["price"], [])
-                refined = self.engine.post_classify(h["price"], level_clusters)
-                if current_batch_id:
-                    for c in level_clusters:
-                        if c.batch_id == current_batch_id:
-                            c.behavior_signature = refined
+            
+            self._batch_counter = getattr(self, '_batch_counter', 0) + 1
+            if self._batch_counter % 10 == 0:
+                hotspots = self.matrix.hotspots(self.cfg.min_occurrences)
+                for h in hotspots:
+                    level_clusters = self.matrix.active_levels.get(h["price"], [])
+                    refined = self.engine.post_classify(h["price"], level_clusters)
+                    if current_batch_id:
+                        for c in level_clusters:
+                            if c.batch_id == current_batch_id:
+                                c.behavior_signature = refined
+                            
+            # Persiste qualquer cluster que teve a assinatura elevada no DuckDB
+            upgraded = [
+                c for c in clusters
+                if c.behavior_signature.value != original_signatures.get(id(c))
+            ]
+            if upgraded:
+                self.repo.begin()
+                try:
+                    self.repo.conn.executemany(
+                        """UPDATE liquidity_clusters
+                           SET behavior_signature = ?
+                           WHERE symbol = ? AND timestamp = ? AND price = ?""",
+                        [(c.behavior_signature.value, c.symbol, c.timestamp, c.price) for c in upgraded]
+                    )
+                    self.repo.commit()
+                except Exception:
+                    self.repo.rollback()
+                    raise
         except Exception:
             self.matrix.restore(snap)
             raise

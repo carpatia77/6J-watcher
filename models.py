@@ -19,7 +19,6 @@ class BehaviorSignature(str, Enum):
     ABSORPTION_PASSIVE   = "absorption_passive"
     BREAKOUT_GENUINE     = "breakout_genuine"
     LIQUIDITY_VACUUM     = "liquidity_vacuum"
-    MAGNET_EFFECT        = "magnet_effect" # DEPRECATED: Scheduled for cleanup
     DEFENSE_LINE         = "defense_line"
     UNKNOWN              = "unknown"
 

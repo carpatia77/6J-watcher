@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ class BookReconstructor:
 
         # ✅ UTC: Databento ts_event é UNIX nanoseg UTC
         ts_ns = record.ts_event
-        ts = datetime.utcfromtimestamp(ts_ns / 1e9)
+        ts = datetime.fromtimestamp(ts_ns / 1e9, timezone.utc)
 
         # ✅ price é int fixed-point — dividir por 1e9 para obter float
         last_price = record.price / FIXED_POINT
@@ -90,7 +90,7 @@ class BookReconstructor:
         if "T" not in action_str.upper():
             return None
 
-        ts = datetime.utcfromtimestamp(record.ts_event / 1e9)
+        ts = datetime.fromtimestamp(record.ts_event / 1e9, timezone.utc)
         price = record.price / FIXED_POINT
         size = getattr(record, "size", 0)
         if size == 0:
