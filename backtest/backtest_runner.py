@@ -142,7 +142,7 @@ class BacktestRunner:
 
         # Calibra thresholds com dados persistidos
         logger.info("Calibrando SignatureProfiler...")
-        profiler = SignatureProfiler(self.db_path, cfg=self.cfg)
+        profiler = SignatureProfiler(self.db_path, cfg=self.cfg, conn=self.repo.conn)
         profile  = profiler.build_profile(symbol, lookback_days=30, horizon_minutes=30)
         profiler.save_profile(profile, self.profile_path)
 

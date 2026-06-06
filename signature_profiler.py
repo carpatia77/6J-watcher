@@ -15,10 +15,10 @@ class SignatureProfiler:
     Calcula MFE/MAE via DuckDB Window Functions e gera Tabelas de Percentis
     Empíricos para normalização não-paramétrica de Order Flow.
     """
-    def __init__(self, db_path: str, cfg: Optional[Config] = None):
+    def __init__(self, db_path: str, cfg: Optional[Config] = None, conn=None):
         self.cfg = cfg or Config()
         self.db_path = db_path
-        self.conn = duckdb.connect(db_path, read_only=True)
+        self.conn = conn if conn else duckdb.connect(db_path, read_only=True)
 
     def define_session(self, hour: int) -> str:
         if 0 <= hour < 8: return "ASIAN"
