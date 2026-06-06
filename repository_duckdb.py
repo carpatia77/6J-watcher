@@ -90,8 +90,14 @@ class DuckDBRepository:
             delta_price_ticks  INTEGER,
             confidence         DOUBLE,
             outcome            VARCHAR,
+            batch_id           VARCHAR,
             raw_payload        TEXT
         )""")
+        
+        try:
+            self.conn.execute("ALTER TABLE liquidity_clusters ADD COLUMN batch_id VARCHAR")
+        except Exception:
+            pass  # coluna já existe
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS key_levels (
             symbol             VARCHAR,
@@ -144,10 +150,10 @@ class DuckDBRepository:
             c.symbol, c.timestamp, c.price, c.session,
             c.behavior_signature.value, c.total_ask, c.total_bid,
             c.cumdelta, c.deltamin, c.deltamax, c.delta_price_ticks,
-            c.confidence, c.outcome, _j(c.raw_payload)
+            c.confidence, c.outcome, c.batch_id, _j(c.raw_payload)
         ] for c in clusters]
         if rows:
-            self.conn.executemany("INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            self.conn.executemany("INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     def upsert_key_level(self, level: KeyLevel):
         self.conn.execute(

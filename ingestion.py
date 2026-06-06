@@ -59,32 +59,90 @@ class IngestionService:
                 len(dom_rows), symbol,
             )
 
-        # Build clusters from tape — single source of truth
+        # Agregação de tape events por (price, side) com janela de continuidade
+        # Se mudar de preço ou lado, fecha o cluster atual e abre outro.
         clusters: List[LiquidityCluster] = []
         batch_id = str(time.time_ns())
-        for e in tape:
-            session = self.cfg.session_for(e.timestamp.hour)
+        
+        if tape:
+            current_cluster_data = None
             
-            if self.last_closed_price is not None:
-                dp = round((e.price - self.last_closed_price) / self.cfg.tick_size)
-            else:
-                dp = 0
-
-            c = LiquidityCluster(
-                symbol    = symbol,
-                timestamp = e.timestamp,
-                price     = e.price,
-                session   = session,
-                total_bid = e.volume if e.side.value == "buy"  else 0,
-                total_ask = e.volume if e.side.value == "sell" else 0,
-                cumdelta  = e.volume if e.side.value == "buy"  else -e.volume,
-                delta_price_ticks = dp,
-                batch_id  = batch_id,
-                raw_payload = e.raw,
-            )
-            c.behavior_signature = self.engine.classify(c)
-            clusters.append(c)
-            self.last_closed_price = e.price
+            for e in tape:
+                side = e.side.value
+                price = e.price
+                vol = e.volume
+                cumdelta = vol if side == "buy" else -vol
+                
+                # Quebra de contexto: mudou o preço ou a direção da agressão
+                if current_cluster_data is None or current_cluster_data["price"] != price or current_cluster_data["side"] != side:
+                    # Fecha o cluster anterior, se existir
+                    if current_cluster_data is not None:
+                        # O delta_price_ticks é medido em relação ao último cluster fechado
+                        dp = round((current_cluster_data["price"] - self.last_closed_price) / self.cfg.tick_size) if self.last_closed_price is not None else 0
+                        
+                        c = LiquidityCluster(
+                            symbol=symbol,
+                            timestamp=current_cluster_data["timestamp"],
+                            price=current_cluster_data["price"],
+                            session=self.cfg.session_for(current_cluster_data["timestamp"].hour),
+                            total_bid=current_cluster_data["total_bid"],
+                            total_ask=current_cluster_data["total_ask"],
+                            cumdelta=current_cluster_data["cumdelta"],
+                            deltamin=current_cluster_data["deltamin"],
+                            deltamax=current_cluster_data["deltamax"],
+                            delta_price_ticks=dp,
+                            batch_id=batch_id,
+                            raw_payload={"events_aggregated": current_cluster_data["count"]},
+                        )
+                        sig, conf = self.engine.classify(c)
+                        c.behavior_signature = sig
+                        c.confidence = conf
+                        clusters.append(c)
+                        self.last_closed_price = current_cluster_data["price"]
+                    
+                    # Inicia um novo cluster
+                    current_cluster_data = {
+                        "price": price,
+                        "side": side,
+                        "timestamp": e.timestamp,
+                        "total_bid": vol if side == "buy" else 0,
+                        "total_ask": vol if side == "sell" else 0,
+                        "cumdelta": cumdelta,
+                        "deltamin": min(0, cumdelta),
+                        "deltamax": max(0, cumdelta),
+                        "count": 1
+                    }
+                else:
+                    # Acumula no mesmo cluster
+                    current_cluster_data["total_bid"] += (vol if side == "buy" else 0)
+                    current_cluster_data["total_ask"] += (vol if side == "sell" else 0)
+                    current_cluster_data["cumdelta"] += cumdelta
+                    current_cluster_data["deltamin"] = min(current_cluster_data["deltamin"], current_cluster_data["cumdelta"])
+                    current_cluster_data["deltamax"] = max(current_cluster_data["deltamax"], current_cluster_data["cumdelta"])
+                    current_cluster_data["count"] += 1
+                    
+            # Adiciona o último cluster pendente
+            if current_cluster_data is not None:
+                dp = round((current_cluster_data["price"] - self.last_closed_price) / self.cfg.tick_size) if self.last_closed_price is not None else 0
+                c = LiquidityCluster(
+                    symbol=symbol,
+                    timestamp=current_cluster_data["timestamp"],
+                    price=current_cluster_data["price"],
+                    session=self.cfg.session_for(current_cluster_data["timestamp"].hour),
+                    total_bid=current_cluster_data["total_bid"],
+                    total_ask=current_cluster_data["total_ask"],
+                    cumdelta=current_cluster_data["cumdelta"],
+                    deltamin=current_cluster_data["deltamin"],
+                    deltamax=current_cluster_data["deltamax"],
+                    delta_price_ticks=dp,
+                    batch_id=batch_id,
+                    raw_payload={"events_aggregated": current_cluster_data["count"]},
+                )
+                sig, conf = self.engine.classify(c)
+                c.behavior_signature = sig
+                c.confidence = conf
+                clusters.append(c)
+                self.last_closed_price = current_cluster_data["price"]
 
         # Persist first — only committed data should drive analysis
         self.repo.begin()
@@ -131,8 +189,8 @@ class IngestionService:
                     self.repo.conn.executemany(
                         """UPDATE liquidity_clusters
                            SET behavior_signature = ?
-                           WHERE symbol = ? AND timestamp = ? AND price = ?""",
-                        [(c.behavior_signature.value, c.symbol, c.timestamp, c.price) for c in upgraded]
+                           WHERE symbol = ? AND timestamp = ? AND price = ? AND batch_id = ?""",
+                        [(c.behavior_signature.value, c.symbol, c.timestamp, c.price, c.batch_id) for c in upgraded]
                     )
                     self.repo.commit()
                 except Exception:

@@ -29,10 +29,10 @@ class AdaptivePatternEngine:
         # Fallback genérico caso o profiler não tenha rodado
         return {
             "thresholds": {
-                "ASIAN":     {"vol_percentiles": {"90": 20, "75": 10}, "imb_percentiles": {"90": 10, "75": 5}},
-                "LONDON":    {"vol_percentiles": {"90": 35, "75": 20}, "imb_percentiles": {"90": 20, "75": 10}},
-                "NEW_YORK":  {"vol_percentiles": {"90": 50, "75": 30}, "imb_percentiles": {"90": 30, "75": 15}},
-                "OFF_HOURS": {"vol_percentiles": {"90": 15, "75": 5},  "imb_percentiles": {"90": 5,  "75": 2}}
+                "ASIAN":     {"vol_percentiles": {"90": 10, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
+                "LONDON":    {"vol_percentiles": {"90": 11, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
+                "NEW_YORK":  {"vol_percentiles": {"90": 11, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
+                "OFF_HOURS": {"vol_percentiles": {"90": 10, "75": 5}, "imb_percentiles": {"90": 5,  "75": 2}}
             }
         }
 
@@ -49,64 +49,54 @@ class AdaptivePatternEngine:
                 return p
         return 0
 
-    def classify(self, cluster: LiquidityCluster) -> BehaviorSignature:
+    def classify(self, cluster: LiquidityCluster) -> tuple[BehaviorSignature, float]:
         """
         Classificação baseada em Microestrutura Real.
-        Usa cluster.delta_price_ticks (calculado pelo IngestionService via Stateful Cursor O(1)).
+        Retorna (Assinatura, Confiança).
         """
         session = self._get_session(cluster.timestamp.hour)
         stats = self.profile.get("thresholds", {}).get(session, {})
         
         if not stats:
-            return BehaviorSignature.UNKNOWN
+            return BehaviorSignature.UNKNOWN, 0.0
 
         vol_p = self._get_percentile_rank(cluster.total_bid + cluster.total_ask, stats.get("vol_percentiles", {}))
         imb_p = self._get_percentile_rank(abs(cluster.total_bid - cluster.total_ask), stats.get("imb_percentiles", {}))
         delta = cluster.delta_price_ticks
         
-        # Agressão de compra = agressores batem no ASK (BID volume domina)
         is_buy_pressure = cluster.total_bid > cluster.total_ask
+        is_stationary = abs(delta) <= 1
+        is_trending = abs(delta) >= 2
         
-        # --- SEMÂNTICA DE MICROESTRUTURA ---
-
         # 1. ABSORPTION PASSIVE (Tier 1)
-        # Agressão extrema (Imbalance > p90), Volume Alto (> p90), mas o preço NÃO ANDA (delta <= 1 tick).
-        # Indica Iceberg Passivo absorvendo toda a agressão no nível.
-        if vol_p >= 90 and imb_p >= 90 and abs(delta) <= 1:
-            return BehaviorSignature.ABSORPTION_PASSIVE
+        if vol_p >= 90 and imb_p >= 90 and is_stationary:
+            conf = (vol_p / 100.0 * 0.4) + (imb_p / 100.0 * 0.4) + 0.2
+            return BehaviorSignature.ABSORPTION_PASSIVE, conf
 
         # 2. BREAKOUT GENUINE (Tier 1)
-        # Volume e Imbalance fortes (> p75), e o preço DESLOCOU (delta > 2 ticks).
-        # A agressão consumiu a liquidez e o mercado aceitou o novo preço.
-        if vol_p >= 75 and imb_p >= 75 and abs(delta) >= 2:
-            return BehaviorSignature.BREAKOUT_GENUINE
+        if vol_p >= 75 and imb_p >= 75 and is_trending:
+            conf = (vol_p / 100.0 * 0.4) + (imb_p / 100.0 * 0.4) + 0.2
+            return BehaviorSignature.BREAKOUT_GENUINE, conf
 
         # 3. SPOOFING WALL (Tier 3)
-        # Volume alto no nível (> p75), mas imbalance MUITO BAIXO (< p50) e preço parado.
-        # Indica liquidez que aparece e desaparece — parede fictícia para enganar algoritmos.
-        # Deve vir ANTES de ICEBERG para não ser engolido pelo imb_p < 90.
-        if vol_p >= 75 and imb_p < 50 and abs(delta) == 0:
-            return BehaviorSignature.SPOOFING_WALL
+        if vol_p >= 75 and imb_p < 50 and is_stationary:
+            conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.2
+            return BehaviorSignature.SPOOFING_WALL, conf
 
         # 4. ICEBERG ACCUMULATION / DISTRIBUTION (Tier 2)
-        # Volume alto executando no mesmo nível (delta == 0), sem imbalance extremo.
-        # Semântica CORRETA: se os compradores estão agredindo mas o preço não sobe,
-        # há uma parede PASSIVA DE VENDA no ASK -> ICEBERG_DISTRIBUTION (vendedor).
-        # Se os vendedores estão agredindo mas o preço não cai,
-        # há uma parede PASSIVA DE COMPRA no BID -> ICEBERG_ACCUMULATION (comprador).
-        if vol_p >= 75 and abs(delta) == 0 and imb_p < 90:
+        if vol_p >= 75 and is_stationary and imb_p < 90:
+            conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.2
             if is_buy_pressure:
-                return BehaviorSignature.ICEBERG_DISTRIBUTION  # Muralha de venda absorvendo compras
+                return BehaviorSignature.ICEBERG_DISTRIBUTION, conf
             else:
-                return BehaviorSignature.ICEBERG_ACCUMULATION  # Muralha de compra absorvendo vendas
+                return BehaviorSignature.ICEBERG_ACCUMULATION, conf
 
         # 5. LIQUIDITY VACUUM (Tier 3)
-        # Volume muito baixo (< p50) mas o preço deslocou significativamente (>= 2 ticks).
-        # O mercado se moveu com resistência mínima — book vazio, gap de liquidez.
-        if vol_p < 50 and abs(delta) >= 2:
-            return BehaviorSignature.LIQUIDITY_VACUUM
+        if vol_p < 50 and is_trending:
+            conf = ((100 - vol_p) / 100.0 * 0.7) + 0.3
+            return BehaviorSignature.LIQUIDITY_VACUUM, conf
 
-        return BehaviorSignature.UNKNOWN
+        return BehaviorSignature.UNKNOWN, 0.0
 
     def post_classify(self, price: float, clusters: List[LiquidityCluster]) -> BehaviorSignature:
         """

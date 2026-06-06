@@ -106,7 +106,10 @@ class LiquidityMatrix:
                     raw_payload = tape.raw,
                 )
                 if classify:
-                    cluster.behavior_signature = classify(cluster)
+                    result = classify(cluster)
+                    cluster.behavior_signature, cluster.confidence = (
+                        result if isinstance(result, tuple) else (result, 0.0)
+                    )
                 self.ingest_cluster(cluster)
 
     def get_price_matrix(self, price: float) -> Dict:
