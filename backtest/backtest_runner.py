@@ -82,7 +82,6 @@ class BacktestRunner:
             "processing_time_seconds": 0.0, "report": "",
         }
 
-
     def run(self, start: date, end: date, symbol: str = "6J", skip_download: bool = False) -> Dict:
         # Reset por mês — métricas acumuladas distorciam relatório e checkpoint timing
         self.metrics = {
@@ -98,12 +97,15 @@ class BacktestRunner:
         label = f"{start.strftime('%b/%Y')}"
 
         # ─ Progress bar ─────────────────────────────────────────────
+        # ascii=True: usa apenas [-########] — evita UnicodeEncodeError no Windows CP1252
+        # file=sys.stderr: separa barra de progresso do log em arquivo
         if TQDM_AVAILABLE:
             pbar = tqdm(
                 total=estimated_batches, desc=f"  {label}", unit="batch",
                 dynamic_ncols=True,
+                ascii=True,
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] clusters:{postfix}",
-                file=sys.stdout,
+                file=sys.stderr,
             )
         else:
             pbar = None
@@ -142,9 +144,9 @@ class BacktestRunner:
         logger.info("=== Mes %s stream OK em %.1fs | %d batches | %d clusters ===",
             label, elapsed_s, self.metrics["total_batches"], self.metrics["total_clusters"])
 
-        # ─ SignatureProfiler ─────────────────────────────────────────
+        # ─ SignatureProfiler ──────────────────────────────────────
         self.repo.commit()
-        
+
         if self.skip_profiler:
             logger.info("[Profiler] skip_profiler=True — pulando calibragem MFE/MAE.")
         else:
@@ -162,7 +164,7 @@ class BacktestRunner:
             except Exception:
                 logger.exception("[Profiler] Falha na calibragem — continuando sem atualizar profile:")
 
-        # ─ Hotspots e relatório ─────────────────────────────────────
+        # ─ Hotspots e relatório ─────────────────────────────────
         hotspots      = self.matrix.hotspots(min_occurrences=self.cfg.min_occurrences)
         sig_dist      = self.repo.signature_distribution(symbol)
         sess_analysis = self.repo.session_analysis(symbol)
