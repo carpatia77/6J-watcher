@@ -78,12 +78,7 @@ class AdaptivePatternEngine:
             conf = (vol_p / 100.0 * 0.4) + (imb_p / 100.0 * 0.4) + 0.2
             return BehaviorSignature.BREAKOUT_GENUINE, conf
 
-        # 3. SPOOFING WALL (Tier 3)
-        if vol_p >= 75 and imb_p < 50 and is_stationary:
-            conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.2
-            return BehaviorSignature.SPOOFING_WALL, conf
-
-        # 4. ICEBERG ACCUMULATION / DISTRIBUTION (Tier 2)
+        # 3. ICEBERG ACCUMULATION / DISTRIBUTION (Tier 2)
         if vol_p >= 75 and is_stationary and imb_p < 90:
             conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.2
             if is_buy_pressure:
@@ -91,9 +86,15 @@ class AdaptivePatternEngine:
             else:
                 return BehaviorSignature.ICEBERG_ACCUMULATION, conf
 
+        # 4. SPOOFING WALL (Tier 3)
+        # O que restou de estacionário com volume, mas desequilíbrio muito pequeno (book fake retirado)
+        if vol_p >= 75 and imb_p < 50 and is_stationary:
+            conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.2
+            return BehaviorSignature.SPOOFING_WALL, conf
+
         # 5. LIQUIDITY VACUUM (Tier 3)
         if vol_p < 50 and is_trending:
-            conf = ((100 - vol_p) / 100.0 * 0.7) + 0.3
+            conf = min(1.0, abs(delta) / 5.0 * 0.7 + (1 - vol_p / 100.0) * 0.3)
             return BehaviorSignature.LIQUIDITY_VACUUM, conf
 
         return BehaviorSignature.UNKNOWN, 0.0
