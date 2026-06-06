@@ -32,7 +32,7 @@ def main():
         api_key=API_KEY,
         db_path="./data/backtest_8months.db",
         profile_path="./data/profile_8months.json",
-        batch_size_seconds=300,
+        batch_size_seconds=60,
         skip_dom=True
     )
 
@@ -49,6 +49,9 @@ def main():
         except Exception as e:
             logger.error(f"Erro no mês {start_dt}: {e}")
             break
+        finally:
+            # NOVO: força flush parcial mas não fecha — mantém para próximo mês
+            runner.repo.conn.execute("CHECKPOINT")
 
         elapsed = (time.time() - t0) / 3600
         # Relatório parcial após cada mês
@@ -72,6 +75,8 @@ def main():
 
     logger.info("Salvando relatorio consolidado...")
     runner.save_report("./data/backtest_8months_report.md")
+    # NOVO: fechar explicitamente ao final de tudo
+    runner.repo.close()
     logger.info("Orquestrador concluido.")
 
 if __name__ == "__main__":

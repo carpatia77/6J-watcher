@@ -38,8 +38,11 @@ class DatabentoLoader:
         return cache_file
 
     def stream_records(self, file_path: Path) -> Iterator:
-        store = db.DBNStore.from_file(str(file_path))
-        yield from store
+        """Streaming verdadeiro — processa registro a registro sem RAM completa."""
+        import databento as db
+        with db.DBNStore.from_file(str(file_path)) as store:
+            for record in store:
+                yield record
 
     def get_metadata(self, file_path: Path) -> dict:
         store = db.DBNStore.from_file(str(file_path))

@@ -21,8 +21,7 @@ class DuckDBRepository:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = duckdb.connect(db_path)
         self.conn.execute("PRAGMA threads=4")
-        self.conn.execute("PRAGMA memory_limit='2GB'")
-        self.conn.execute("PRAGMA wal_autocheckpoint='100GB'")
+        self.conn.execute("PRAGMA memory_limit='4GB'")
         self._init_schema()
 
     def begin(self):
@@ -41,6 +40,20 @@ class DuckDBRepository:
             self.conn.execute("ROLLBACK")
         except Exception as e:
             pass
+
+    def close(self):
+        """Fecha conexão e libera file lock (crítico no Windows)."""
+        try:
+            self.conn.execute("CHECKPOINT")  # força flush antes de fechar
+            self.conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
 
     def _init_schema(self):
         self.conn.execute("""

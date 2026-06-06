@@ -52,6 +52,18 @@ class BacktestRunner:
         self.profile_path = profile_path
         self.skip_dom = skip_dom
 
+        import atexit
+        atexit.register(self._cleanup)
+
+    def _cleanup(self):
+        """Garante fechamento limpo mesmo em crash — libera file lock no Windows."""
+        try:
+            self.repo.conn.execute("CHECKPOINT")
+            self.repo.conn.close()
+            logger.info("[BacktestRunner] Conexão DuckDB fechada via atexit.")
+        except Exception:
+            pass
+
         # Loader e adapter Databento
         self.loader = DatabentoLoader(api_key)
         self.adapter = DatabentoAdapter(self.loader, batch_size_seconds=batch_size_seconds)
@@ -144,7 +156,7 @@ class BacktestRunner:
         logger.info("Calibrando SignatureProfiler...")
         profiler = SignatureProfiler(self.db_path, cfg=self.cfg, conn=self.repo.conn)
         lookback_days = (end - start).days + 5
-        profile  = profiler.build_profile(symbol, lookback_days=lookback_days, horizon_minutes=30, since=str(end))
+        profile  = profiler.build_profile(symbol, lookback_days=lookback_days, horizon_minutes=30, since=str(start))
         profiler.save_profile(profile, self.profile_path)
 
         # Hotspots e relatório narrativo

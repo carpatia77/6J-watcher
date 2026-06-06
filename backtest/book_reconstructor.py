@@ -81,13 +81,13 @@ class BookReconstructor:
     def extract_tape_event(self, record) -> Optional[Dict]:
         """
         Extrai trade de record MBP-10.
-        action == 'T' identifica trades no Databento.
+        action == db.Action.TRADE identifica trades no Databento.
         side: 'A' = ask aggressor (venda), 'B' = bid aggressor (compra).
         """
+        import databento as db
         action = getattr(record, "action", None)
-        # action pode ser string char ou enum — normaliza para string
-        action_str = str(action) if action is not None else ""
-        if "T" not in action_str.upper():
+        # Comparar com o enum diretamente, ou com o char 'T' (ASCII 84)
+        if action != db.Action.TRADE and getattr(action, 'value', action) != 84:
             return None
 
         ts = datetime.fromtimestamp(record.ts_event / 1e9, timezone.utc)
