@@ -45,10 +45,12 @@ class BacktestRunner:
         db_path: str = "./data/backtest.db",
         profile_path: str = "./data/backtest_profile.json",
         batch_size_seconds: int = 300,
+        skip_dom: bool = False,
     ):
         self.api_key = api_key
         self.db_path = db_path
         self.profile_path = profile_path
+        self.skip_dom = skip_dom
 
         # Loader e adapter Databento
         self.loader = DatabentoLoader(api_key)
@@ -114,7 +116,7 @@ class BacktestRunner:
         file_path = self._resolve_file(start, end, symbol, skip_download)
 
         # Stream de batches → pipeline
-        for tape_rows, _ in self.adapter.stream_batches(file_path, skip_dom=True):
+        for tape_rows, _ in self.adapter.stream_batches(file_path, skip_dom=self.skip_dom):
             clusters = self.service.ingest_batch(tape_rows, [], symbol)
 
             self.metrics["total_batches"]     += 1

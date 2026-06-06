@@ -32,21 +32,43 @@ def main():
         api_key=API_KEY,
         db_path="./data/backtest_8months.db",
         profile_path="./data/profile_8months.json",
-        batch_size_seconds=60
+        batch_size_seconds=300,
+        skip_dom=True
     )
 
-    for start_dt, end_dt in CHUNKS:
+    import time
+    for i, (start_dt, end_dt) in enumerate(CHUNKS):
         logger.info(f"\n=============================================")
-        logger.info(f"PROCESSANDO CHUNK: {start_dt} a {end_dt}")
+        logger.info(f"PROCESSANDO MÊS {i+1}/8: {start_dt} → {end_dt}")
         logger.info(f"=============================================")
+        t0 = time.time()
         try:
             runner.run(start=start_dt, end=end_dt, symbol="6J")
             runner.repo.conn.execute("CHECKPOINT")
             logger.info(f"Checkpoint concluído para {start_dt} a {end_dt}")
         except Exception as e:
-            logger.error(f"Erro ao processar chunk {start_dt} a {end_dt}: {e}")
-            # continua proximo chunk em vez de abortar tudo
+            logger.error(f"Erro no mês {start_dt}: {e}")
             continue
+
+        elapsed = (time.time() - t0) / 3600
+        # Relatório parcial após cada mês
+        count = runner.repo.conn.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN behavior_signature!='unknown' THEN 1 ELSE 0 END) "
+            "FROM liquidity_clusters WHERE symbol='6J' AND timestamp >= ? AND timestamp < ?",
+            [str(start_dt), str(end_dt)]
+        ).fetchone()
+        
+        total, classified = count[0], count[1]
+        pct = (classified / total * 100) if total and total > 0 else 0.0
+        
+        logger.info(f"  Mês {start_dt.strftime('%b/%Y')}: {total} clusters, "
+                    f"{pct:.1f}% classificados, "
+                    f"processado em {elapsed:.4f}h")
+
+        # Opção de parar após cada mês para inspecionar o dashboard
+        if os.getenv("BACKTEST_INTERACTIVE", "0") == "1":
+            input(f"\n[PAUSA] Mês {i+1} concluído. "
+                  f"Abra o dashboard e pressione Enter para continuar...")
 
     logger.info("Salvando relatorio consolidado...")
     runner.save_report("./data/backtest_8months_report.md")
