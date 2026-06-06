@@ -48,7 +48,7 @@ def main():
             logger.info(f"Checkpoint concluído para {start_dt} a {end_dt}")
         except Exception as e:
             logger.error(f"Erro no mês {start_dt}: {e}")
-            continue
+            break
 
         elapsed = (time.time() - t0) / 3600
         # Relatório parcial após cada mês

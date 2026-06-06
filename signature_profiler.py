@@ -26,7 +26,7 @@ class SignatureProfiler:
         if 13 <= hour < 22: return "NEW_YORK"
         return "OFF_HOURS"
 
-    def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: Optional[float] = None) -> dict:
+    def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: Optional[float] = None, since: Optional[str] = None) -> dict:
         """
         Executa o pipeline de perfilamento empírico.
         Toda a agregação, percentis e regras direcionais rodam nativamente no motor C++ do DuckDB.
@@ -37,7 +37,12 @@ class SignatureProfiler:
             
         tick_size = tick_size or self.cfg.tick_size
         interval_clause = f"INTERVAL '{horizon_minutes}' MINUTE"
-        cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        if since:
+            anchor_dt = datetime.strptime(since, '%Y-%m-%d')
+            cutoff = (anchor_dt - timedelta(days=lookback_days)).strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d %H:%M:%S')
         
         # 1. CÁLCULO VETORIAL DE MFE/MAE NO DUCKDB E WIN/LOSS
         base_query = f"""
