@@ -137,11 +137,30 @@ def main():
 
     # ── PASSO 1: Rodar SignatureProfiler ─────────────────────────────────
     logger.info("PASSO 1: Calculando percentis empíricos com lookback=%d dias...", args.lookback_days)
+    
+    import json
+    variance_file = "./data/variance_report.json"
+    filter_dates = None
+    since_date = None
+    if os.path.exists(variance_file):
+        try:
+            with open(variance_file, "r") as f:
+                variance = json.load(f)
+            filter_dates = variance.get("calibration_days", [])
+            if filter_dates:
+                filter_dates.sort()
+                since_date = filter_dates[-1]
+                logger.info("Usando %d Trend Days do variance_report.json para calibração", len(filter_dates))
+        except Exception as e:
+            logger.warning("Falha ao ler variance_report.json: %s", e)
+
     profiler = SignatureProfiler(args.db, cfg=cfg)
     profile  = profiler.build_profile(
         symbol          = args.symbol,
         lookback_days   = args.lookback_days,   # cobre os 8 meses inteiros
         horizon_minutes = args.horizon_minutes,
+        since           = since_date,
+        filter_dates    = filter_dates,
     )
 
     if "error" in profile:

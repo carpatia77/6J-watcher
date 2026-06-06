@@ -26,7 +26,7 @@ class SignatureProfiler:
         if 13 <= hour < 22: return "NEW_YORK"
         return "OFF_HOURS"
 
-    def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: Optional[float] = None, since: Optional[str] = None) -> dict:
+    def build_profile(self, symbol: str, lookback_days: int = 30, horizon_minutes: int = 30, tick_size: Optional[float] = None, since: Optional[str] = None, filter_dates: Optional[list[str]] = None) -> dict:
         """
         Executa o pipeline de perfilamento empírico.
         Toda a agregação, percentis e regras direcionais rodam nativamente no motor C++ do DuckDB.
@@ -43,6 +43,11 @@ class SignatureProfiler:
             cutoff = (anchor_dt - timedelta(days=lookback_days)).strftime('%Y-%m-%d %H:%M:%S')
         else:
             cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d %H:%M:%S')
+            
+        filter_clause = ""
+        if filter_dates:
+            dates_str = ",".join([f"'{d}'" for d in filter_dates])
+            filter_clause = f"AND CAST(c.timestamp AS DATE) IN ({dates_str})"
         
         # 1. CÁLCULO VETORIAL DE MFE/MAE NO DUCKDB E WIN/LOSS
         base_query = f"""
@@ -65,7 +70,7 @@ class SignatureProfiler:
               ON c.symbol = t.symbol 
              AND t.timestamp > c.timestamp 
              AND t.timestamp <= c.timestamp + {interval_clause}
-            WHERE c.symbol = ? AND c.timestamp > ?
+            WHERE c.symbol = ? AND c.timestamp > ? {filter_clause}
             GROUP BY c.timestamp, c.behavior_signature, c.session, c.total_bid, c.total_ask, c.cumdelta, c.price
         ),
         mfe_mae_calc AS (
