@@ -2,7 +2,7 @@ from __future__ import annotations
 """
 ingestion.py
 ------------
-Orquestra o pipeline completo de ingestão:
+Orquestra o pipeline completo de ingestao:
   1. Parse T&S e DOM
   2. Persiste no DuckDB
   3. Alimenta a LiquidityMatrix
@@ -21,7 +21,7 @@ from adaptive_pattern_engine import AdaptivePatternEngine
 from liquidity_matrix import LiquidityMatrix
 from repository_duckdb import DuckDBRepository
 
-# Janela de micro-agregação em nanossegundos (250ms)
+# Janela de micro-agregacao em nanossegundos (250ms)
 _WINDOW_NS = 250_000_000
 
 
@@ -45,7 +45,7 @@ class IngestionService:
                 self.last_closed_price
             )
 
-    # ── DOM index ─────────────────────────────────────────────────────────────────────
+    # -- DOM index -----------------------------------------------------------------
 
     @staticmethod
     def _build_dom_index(
@@ -54,17 +54,17 @@ class IngestionService:
         top_n: int = 5,
     ) -> Dict[int, List[Tuple[int, int, int]]]:
         """
-        Pré-indexa dom_rows uma única vez por batch.
+        Pre-indexa dom_rows uma unica vez por batch.
 
         Estrutura retornada:
             index[price_key] = sorted list of (ts_ns, bid_sum, ask_sum)
 
-        price_key = round(price / tick_size)  — inteiro, sem drift de float.
-        Apenas os top_n níveis (level_index < top_n) são considerados.
+        price_key = round(price / tick_size)  -- inteiro, sem drift de float.
+        Apenas os top_n niveis (level_index < top_n) sao considerados.
         Lista mantida ordenada por ts_ns para bisect O(log K) em _dom_at.
 
         Complexidade: O(D log D) build, O(log K) lookup.
-        D = len(dom_rows), K = snapshots únicos por preço (tipicamente < 100).
+        D = len(dom_rows), K = snapshots unicos por preco (tipicamente < 100).
         """
         if not dom_rows or tick_size <= 0:
             return {}
@@ -82,7 +82,7 @@ class IngestionService:
             acc[key] = (b + row.get("bid_volume", 0),
                         a + row.get("ask_volume", 0))
 
-        # Agrupa por price_key e ordena por ts_ns — lista pronta para bisect
+        # Agrupa por price_key e ordena por ts_ns -- lista pronta para bisect
         grouped: Dict[int, List[Tuple[int, int, int]]] = defaultdict(list)
         for (pk, ts_ns), (b, a) in acc.items():
             grouped[pk].append((ts_ns, b, a))
@@ -90,7 +90,7 @@ class IngestionService:
         index: Dict[int, List[Tuple[int, int, int]]] = {}
         for pk, entries in grouped.items():
             entries.sort()          # ordena por ts_ns (primeiro elemento da tupla)
-            index[pk] = entries     # lista já ordenada, reutilizada diretamente
+            index[pk] = entries     # lista ja ordenada, reutilizada diretamente
 
         return index
 
@@ -104,15 +104,13 @@ class IngestionService:
         Retorna (dom_bid, dom_ask) do snapshot DOM mais recente com
         timestamp_ns <= end_ns para o price_key dado.
 
-        O(log K) via bisect sobre lista pré-ordenada — sem rebuild a cada chamada.
+        O(log K) via bisect sobre lista pre-ordenada -- sem rebuild a cada chamada.
         """
         pk      = round(price / self.cfg.tick_size)
         entries = dom_index.get(pk)
         if not entries:
             return (0, 0)
 
-        # bisect_right sobre ts_ns (elemento 0 de cada tupla)
-        # Usa chave lambda para comparar apenas o primeiro elemento
         lo, hi = 0, len(entries)
         while lo < hi:
             mid = (lo + hi) // 2
@@ -126,7 +124,7 @@ class IngestionService:
         _, b, a = entries[pos]
         return (b, a)
 
-    # ── Micro-agregação em janelas de 250ms ───────────────────────────────────────
+    # -- Micro-agregacao em janelas de 250ms ---------------------------------------
 
     def _build_clusters_from_windows(
         self,
@@ -139,13 +137,13 @@ class IngestionService:
         Agrega TapeEvents em janelas de 250ms.
 
         Dentro de cada janela:
-          - total_bid / total_ask acumulam ambos os lados  →  imb != vol
+          - total_bid / total_ask acumulam ambos os lados  ->  imb != vol
           - delta_price_ticks = (last_price - first_price) / tick_size
           - cumdelta / deltamin / deltamax via CVD incremental
           - dom_bid / dom_ask injetados via _dom_at() no fechamento
 
-        Fallback para produção MQL5 sem timestamp_ns:
-          Cada TapeEvent gera sua própria janela (sem regressão).
+        Fallback para producao MQL5 sem timestamp_ns:
+          Cada TapeEvent gera sua propria janela (sem regressao).
         """
         if not tape:
             return []
@@ -235,7 +233,7 @@ class IngestionService:
 
         return clusters
 
-    # ── ingest_batch ─────────────────────────────────────────────────────────────────────
+    # -- ingest_batch --------------------------------------------------------------
 
     def ingest_batch(
         self,
@@ -247,8 +245,8 @@ class IngestionService:
         """
         Processa um batch de eventos T&S + DOM.
 
-        top_n: número de níveis do Book a considerar no snapshot DOM.
-               Default=5. Use top_n=10 para capturar Icebergs em níveis
+        top_n: numero de niveis do Book a considerar no snapshot DOM.
+               Default=5. Use top_n=10 para capturar Icebergs em niveis
                mais profundos (6-10) sem custo computacional proibitivo.
         """
         tape = parse_tape_rows(tape_rows, symbol)
@@ -256,7 +254,7 @@ class IngestionService:
 
         if tape_rows and not tape:
             logging.warning(
-                "[ingest_batch] %d tape_rows sem parse (symbol=%s) — payload malformado.",
+                "[ingest_batch] %d tape_rows sem parse (symbol=%s) -- payload malformado.",
                 len(tape_rows), symbol,
             )
             return []
@@ -264,14 +262,13 @@ class IngestionService:
             return []
         if dom_rows and not dom:
             logging.warning(
-                "[ingest_batch] %d dom_rows sem parse (symbol=%s) — DOM offline.",
+                "[ingest_batch] %d dom_rows sem parse (symbol=%s) -- DOM offline.",
                 len(dom_rows), symbol,
             )
 
         batch_id = str(time.time_ns())
 
-        # Pré-indexa DOM uma vez por batch: O(D log D)
-        # top_n configurável: 5 para produção, 10 para capturar níveis profundos
+        # Pre-indexa DOM uma vez por batch: O(D log D)
         dom_index = self._build_dom_index(dom_rows, self.cfg.tick_size, top_n=top_n)
 
         clusters = self._build_clusters_from_windows(tape, dom_index, symbol, batch_id)
@@ -303,6 +300,11 @@ class IngestionService:
                     refined = self.engine.post_classify(h["price"], level_clusters)
                     if current_batch_id:
                         for c in level_clusters:
+                            # BUG 8 FIX: o assign de refined estava antes deste if,
+                            # corrompendo em RAM a assinatura de clusters de batches
+                            # anteriores ainda presentes na matrix. RAM e DB agora
+                            # ficam consistentes -- apenas clusters do batch atual
+                            # sao atualizados em ambos os lugares.
                             if c.batch_id == current_batch_id:
                                 c.behavior_signature = refined
 
