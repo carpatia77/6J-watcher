@@ -9,11 +9,18 @@ class AdaptivePatternEngine:
     """
     Classificador Não-Paramétrico baseado em Percentis Empíricos e Deslocamento de Preço.
     Calibrado para micro-janelas de 250ms (ingestion.py _WINDOW_NS).
+
+    A partir do profile gerado com dom_min_level (MEDIO-08), aplica multiplicadores
+    de confiança diferenciados por profundidade de Book (shallow/mid/deep).
+    Retrocompativel: quando depth_multipliers está ausente no profile, multiplier=1.0.
     """
 
     TIER_1 = ["breakout_genuine", "defense_line", "absorption_passive"]
     TIER_2 = ["iceberg_accumulation", "iceberg_distribution"]
     TIER_3 = ["spoofing_wall", "liquidity_vacuum"]
+
+    # Assinaturas que se beneficiam da estratificação por profundidade
+    _DEPTH_SENSITIVE = {"spoofing_wall", "iceberg_accumulation", "iceberg_distribution"}
 
     def __init__(self, profile_path: str = "profile.json",
                  tick_size: Optional[float] = None,
@@ -33,10 +40,7 @@ class AdaptivePatternEngine:
         """
         Fallback calibrado para janelas de 250ms do 6J CME MBP-10.
         Sincronizado com SignatureProfiler._get_fallback_thresholds().
-
-        Valores anteriores (10-11 lotes vol_p90) eram de tick-único e causavam
-        colapso de classificação para ABSORPTION_PASSIVE em quase toda janela
-        antes do profile.json ser gerado pelo backtest.
+        depth_multipliers ausente intencionalmente: serão derivados do backtest real.
         """
         return {
             "signatures": {},
@@ -67,11 +71,24 @@ class AdaptivePatternEngine:
         return "OFF_HOURS"
 
     def _get_percentile_rank(self, value: float, percentile_dict: Dict[str, float]) -> int:
-        """Retorna o percentil (ex: 90, 95) que o valor ultrapassa."""
         for p in sorted([int(k) for k in percentile_dict.keys()], reverse=True):
             if value >= percentile_dict[str(p)]:
                 return p
         return 0
+
+    def _depth_multiplier(self, sig_key: str, depth_band: str) -> float:
+        """
+        Retorna o multiplicador de confiança para (assinatura, depth_band).
+        Lido do profile.json gerado pelo SignatureProfiler após o backtest.
+        Retorna 1.0 (neutro) quando:
+          - profile ainda não tem depth_multipliers (pré-backtest)
+          - assinatura não é depth-sensitive (ABSORPTION_PASSIVE, BREAKOUT_GENUINE etc.)
+          - depth_band ausente (DOM offline — dom_min_level=9 → band='deep' → neutro)
+        """
+        if sig_key not in self._DEPTH_SENSITIVE:
+            return 1.0
+        dm = self.profile.get("depth_multipliers", {})
+        return dm.get(sig_key, {}).get(depth_band, 1.0)
 
     def classify(self, cluster: LiquidityCluster) -> tuple:
         """
@@ -84,6 +101,9 @@ class AdaptivePatternEngine:
           3. ICEBERG_*           — Vol>=75%, 50<=Imb<90, |delta|<=1
           4. SPOOFING_WALL       — Vol>=75%, Imb<50,   |delta|<=1
           5. LIQUIDITY_VACUUM    — Vol<50%,  |delta|>=2
+
+        Após determinar (sig, base_conf), aplica depth_multiplier derivado
+        empiricamente do backtest para SPOOFING_WALL e ICEBERG_*.
         """
         session = self._get_session(cluster.timestamp.hour)
         stats   = self.profile.get("thresholds", {}).get(session, {})
@@ -100,26 +120,27 @@ class AdaptivePatternEngine:
         is_stationary   = abs(delta) <= 1
         is_trending     = abs(delta) >= 2
 
+        sig  = BehaviorSignature.UNKNOWN
+        conf = 0.0
+
         # 1. ABSORPTION PASSIVE (Tier 1)
         if vol_p >= 90 and imb_p >= 90 and is_stationary:
             conf = (vol_p / 100.0 * 0.4) + (imb_p / 100.0 * 0.4) + 0.2
-            return BehaviorSignature.ABSORPTION_PASSIVE, conf
+            sig  = BehaviorSignature.ABSORPTION_PASSIVE
 
         # 2. BREAKOUT GENUINE (Tier 1)
-        if vol_p >= 75 and imb_p >= 75 and is_trending:
+        elif vol_p >= 75 and imb_p >= 75 and is_trending:
             conf = (vol_p / 100.0 * 0.4) + (imb_p / 100.0 * 0.4) + 0.2
-            return BehaviorSignature.BREAKOUT_GENUINE, conf
+            sig  = BehaviorSignature.BREAKOUT_GENUINE
 
         # 3. ICEBERG ACCUMULATION / DISTRIBUTION (Tier 2)
-        if vol_p >= 75 and is_stationary and 50 <= imb_p < 90:
+        elif vol_p >= 75 and is_stationary and 50 <= imb_p < 90:
             conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.2
-            if is_buy_pressure:
-                return BehaviorSignature.ICEBERG_DISTRIBUTION, conf
-            else:
-                return BehaviorSignature.ICEBERG_ACCUMULATION, conf
+            sig  = (BehaviorSignature.ICEBERG_DISTRIBUTION
+                    if is_buy_pressure else BehaviorSignature.ICEBERG_ACCUMULATION)
 
         # 4. SPOOFING WALL (Tier 3)
-        if vol_p >= 75 and imb_p < 50 and is_stationary:
+        elif vol_p >= 75 and imb_p < 50 and is_stationary:
             dom_bid = cluster.raw_payload.get("dom_bid", 0)
             dom_ask = cluster.raw_payload.get("dom_ask", 0)
             dom_contradiction = (
@@ -127,19 +148,23 @@ class AdaptivePatternEngine:
                 (not is_buy_pressure and dom_bid > dom_ask * 2)
             )
             dom_bonus = 0.1 if (dom_bid > 0 or dom_ask > 0) and dom_contradiction else 0.0
-            conf = min(1.0,
-                       (vol_p / 100.0 * 0.5)
-                       + ((100 - imb_p) / 100.0 * 0.3)
-                       + 0.1
-                       + dom_bonus)
-            return BehaviorSignature.SPOOFING_WALL, conf
+            conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.1 + dom_bonus
+            sig  = BehaviorSignature.SPOOFING_WALL
 
         # 5. LIQUIDITY VACUUM (Tier 3)
-        if vol_p < 50 and is_trending:
-            conf = min(1.0, abs(delta) / 5.0 * 0.7 + (1 - vol_p / 100.0) * 0.3)
-            return BehaviorSignature.LIQUIDITY_VACUUM, conf
+        elif vol_p < 50 and is_trending:
+            conf = abs(delta) / 5.0 * 0.7 + (1 - vol_p / 100.0) * 0.3
+            sig  = BehaviorSignature.LIQUIDITY_VACUUM
 
-        return BehaviorSignature.UNKNOWN, 0.0
+        if sig == BehaviorSignature.UNKNOWN:
+            return BehaviorSignature.UNKNOWN, 0.0
+
+        # Aplica multiplicador de profundidade (empirico do backtest)
+        # Neutro (1.0) quando profile não tem depth_multipliers ainda
+        multiplier = self._depth_multiplier(sig.value, cluster.depth_band)
+        conf = min(1.0, conf * multiplier)
+
+        return sig, conf
 
     def post_classify(self, price: float, clusters: List[LiquidityCluster]) -> BehaviorSignature:
         """
@@ -176,7 +201,7 @@ class AdaptivePatternEngine:
     ) -> dict:
         """
         Retorna a expectativa matemática do sinal baseada no backtest.
-        Aceita BehaviorSignature ou str (ex: chamadas vindas de hotspots()).
+        Aceita BehaviorSignature ou str.
         """
         sig_key = signature if isinstance(signature, str) else signature.value
         key     = f"{sig_key}_{session}"

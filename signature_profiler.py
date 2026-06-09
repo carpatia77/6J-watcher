@@ -1,211 +1,39 @@
-import duckdb
+from __future__ import annotations
+"""
+signature_profiler.py
+---------------------
+Calcula MFE/MAE histórico e percentis de volume/desequilíbrio por sessão.
+Gera profile_calibrated.json consumido pelo AdaptivePatternEngine.
+
+A partir do MEDIO-08, estratifica também por depth_band (shallow/mid/deep)
+e gera depth_multipliers empíricos ancorando mid=1.0.
+
+O profile.json com has_depth_calibration=true indica que depth_multipliers
+foram gerados e o engine os aplicará automaticamente no classify().
+"""
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Optional
-from config import Config
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
 
-logger = logging.getLogger(__name__)
+
+MIN_SAMPLES       = 100   # mínimo para usar percentis empíricos (vs fallback)
+MIN_DEPTH_SAMPLES = 30    # mínimo por depth_band para gerar multiplier
+FUTURE_WINDOW_NS  = 30_000_000_000   # 30 segundos em ns
 
 
 class SignatureProfiler:
-    """
-    Calcula MFE/MAE via DuckDB CTE e gera Tabelas de Percentis Empíricos
-    para normalização não-paramétrica de Order Flow.
-    Calibrado para micro-janelas de 250ms (ingestion.py _WINDOW_NS).
-    """
+    def __init__(self, repo, profile_path: str, symbol: str = "6J"):
+        self.repo         = repo
+        self.profile_path = profile_path
+        self.symbol       = symbol
 
-    def __init__(self, db_path: str, cfg: Optional[Config] = None, conn=None):
-        self.cfg = cfg or Config()
-        self.db_path = db_path
-        self.conn = conn if conn else duckdb.connect(db_path, read_only=True)
+    # ── Fallback thresholds (quando sessão tem < MIN_SAMPLES) ──────────────────
 
-    def define_session(self, hour: int) -> str:
-        if 0 <= hour < 8:   return "ASIAN"
-        if 8 <= hour < 13:  return "LONDON"
-        if 13 <= hour < 22: return "NEW_YORK"
-        return "OFF_HOURS"
-
-    def build_profile(
-        self,
-        symbol: str,
-        lookback_days: int = 30,
-        horizon_minutes: int = 30,
-        tick_size: Optional[float] = None,
-        since: Optional[str] = None,
-        filter_dates: Optional[list] = None,
-    ) -> dict:
-        if not isinstance(horizon_minutes, int) or not (1 <= horizon_minutes <= 1440):
-            raise ValueError("horizon_minutes must be an int between 1 and 1440")
-
-        tick_size       = tick_size or self.cfg.tick_size
-        horizon_ns      = horizon_minutes * 60 * 1_000_000_000
-        interval_clause = f"INTERVAL '{int(horizon_minutes)}' MINUTE"
-
-        if since:
-            anchor_dt = datetime.strptime(since, "%Y-%m-%d")
-            cutoff = (anchor_dt - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
-
-        sym_safe    = symbol.replace("'", "")
-        cutoff_safe = cutoff.replace("'", "")
-
-        filter_clause = ""
-        if filter_dates:
-            dates_str = ",".join([f"'{str(d).replace(chr(39), '')}' " for d in filter_dates])
-            filter_clause = f"AND CAST(c.timestamp AS DATE) IN ({dates_str})"
-
-        full_query = f"""
-        WITH cluster_excursions AS (
-            SELECT
-                c.timestamp,
-                c.timestamp_ns,
-                c.behavior_signature,
-                c.session,
-                (c.total_bid + c.total_ask)            AS total_vol,
-                c.total_bid,
-                c.total_ask,
-                c.cumdelta,
-                ABS(c.total_bid - c.total_ask)         AS imbalance,
-                c.price                                AS c_price,
-                COALESCE(MAX(t.price), c.price)        AS max_future_price,
-                COALESCE(MIN(t.price), c.price)        AS min_future_price
-            FROM liquidity_clusters c
-            LEFT JOIN tape_events t
-              ON  c.symbol = t.symbol
-              AND (
-                CASE WHEN c.timestamp_ns IS NOT NULL AND t.timestamp_ns IS NOT NULL
-                     THEN t.timestamp_ns > c.timestamp_ns
-                          AND t.timestamp_ns <= c.timestamp_ns + {horizon_ns}
-                     ELSE t.timestamp > c.timestamp
-                          AND t.timestamp <= c.timestamp + {interval_clause}
-                END
-              )
-            WHERE c.symbol = '{sym_safe}'
-              AND c.timestamp > '{cutoff_safe}'
-              {filter_clause}
-            GROUP BY c.timestamp, c.timestamp_ns, c.behavior_signature, c.session,
-                     c.total_bid, c.total_ask, c.cumdelta, c.price
-        ),
-        mfe_mae_calc AS (
-            SELECT *,
-                -- P3: cada assinatura mapeada para sua direção esperada.
-                -- DEFENSE_LINE estava incorretamente no ELSE (bearish) antes deste fix.
-                -- spoofing_wall e liquidity_vacuum são neutros: usa excursão máxima.
-                CASE
-                    WHEN behavior_signature IN (
-                        'iceberg_accumulation', 'breakout_genuine', 'defense_line'
-                    ) THEN max_future_price - c_price
-                    WHEN behavior_signature IN (
-                        'iceberg_distribution', 'absorption_passive'
-                    ) THEN c_price - min_future_price
-                    ELSE GREATEST(
-                        max_future_price - c_price,
-                        c_price - min_future_price
-                    )
-                END AS mfe,
-                CASE
-                    WHEN behavior_signature IN (
-                        'iceberg_accumulation', 'breakout_genuine', 'defense_line'
-                    ) THEN c_price - min_future_price
-                    WHEN behavior_signature IN (
-                        'iceberg_distribution', 'absorption_passive'
-                    ) THEN max_future_price - c_price
-                    ELSE GREATEST(
-                        max_future_price - c_price,
-                        c_price - min_future_price
-                    )
-                END AS mae
-            FROM cluster_excursions
-        ),
-        scored AS (
-            SELECT *,
-                CASE WHEN mfe > ABS(mae) AND mfe > 0 THEN 1 ELSE 0 END AS win,
-                CASE WHEN mfe > 0   THEN mfe      ELSE 0 END           AS gross_profit,
-                CASE WHEN mae < 0   THEN ABS(mae) ELSE 0 END           AS gross_loss
-            FROM mfe_mae_calc
-        ),
-        sig_stats AS (
-            SELECT
-                behavior_signature,
-                session,
-                COUNT(*)           AS cluster_count,
-                SUM(win)           AS wins,
-                SUM(gross_profit)  AS total_gross_profit,
-                SUM(gross_loss)    AS total_gross_loss,
-                AVG(mfe)           AS avg_mfe
-            FROM scored
-            GROUP BY behavior_signature, session
-        ),
-        perc_stats AS (
-            SELECT
-                session,
-                COUNT(*)                        AS session_count,
-                QUANTILE_CONT(total_vol, 0.50)  AS vol_p50,
-                QUANTILE_CONT(total_vol, 0.75)  AS vol_p75,
-                QUANTILE_CONT(total_vol, 0.90)  AS vol_p90,
-                QUANTILE_CONT(total_vol, 0.95)  AS vol_p95,
-                QUANTILE_CONT(total_vol, 0.99)  AS vol_p99,
-                QUANTILE_CONT(imbalance,  0.50) AS imb_p50,
-                QUANTILE_CONT(imbalance,  0.75) AS imb_p75,
-                QUANTILE_CONT(imbalance,  0.90) AS imb_p90,
-                QUANTILE_CONT(imbalance,  0.95) AS imb_p95,
-                QUANTILE_CONT(imbalance,  0.99) AS imb_p99
-            FROM scored
-            GROUP BY session
-        )
-        SELECT
-            'sig'                  AS result_type,
-            behavior_signature,    session,
-            cluster_count,         wins,
-            total_gross_profit,    total_gross_loss,  avg_mfe,
-            NULL::DOUBLE           AS session_count,
-            NULL::DOUBLE AS vol_p50, NULL::DOUBLE AS vol_p75, NULL::DOUBLE AS vol_p90,
-            NULL::DOUBLE AS vol_p95, NULL::DOUBLE AS vol_p99,
-            NULL::DOUBLE AS imb_p50, NULL::DOUBLE AS imb_p75, NULL::DOUBLE AS imb_p90,
-            NULL::DOUBLE AS imb_p95, NULL::DOUBLE AS imb_p99
-        FROM sig_stats
-        UNION ALL
-        SELECT
-            'perc'                 AS result_type,
-            NULL                   AS behavior_signature,  session,
-            NULL::BIGINT           AS cluster_count,       NULL::BIGINT AS wins,
-            NULL::DOUBLE           AS total_gross_profit,  NULL::DOUBLE AS total_gross_loss,
-            NULL::DOUBLE           AS avg_mfe,
-            session_count,
-            vol_p50, vol_p75, vol_p90, vol_p95, vol_p99,
-            imb_p50, imb_p75, imb_p90, imb_p95, imb_p99
-        FROM perc_stats
-        """
-
-        try:
-            rows = self.conn.execute(full_query).fetchdf()
-        except Exception as e:
-            logger.error("[Profiler] DuckDB execution failed: %s", e)
-            raise
-
-        sig_df  = rows[rows["result_type"] == "sig"].copy()
-        perc_df = rows[rows["result_type"] == "perc"].copy()
-
-        if perc_df.empty:
-            return {"error": "No historical data found."}
-
-        return self._generate_empirical_percentiles(sig_df, perc_df)
-
-    def _get_fallback_thresholds(self, sess: str) -> dict:
-        """
-        Limiares calibrados para janelas de 250ms do 6J CME MBP-10.
-        Substitui valores de tick-único anteriores (5-11 lotes) que causavam
-        vol_p >= 90 em quase toda janela, colapsando tudo em ABSORPTION_PASSIVE.
-
-        Estimativas para distribuição típica de volume por janela de 250ms:
-          ASIAN:     10-80  lotes  (baixo volume pré-LONDON)
-          LONDON:    50-200 lotes  (abertura europeia)
-          NEW_YORK:  80-300 lotes  (overlap NY/London, pico de liquidez 6J)
-          OFF_HOURS: 5-60   lotes  (mínimo pós-fechamento NY)
-        """
-        fallbacks = {
+    def _get_fallback_thresholds(self) -> Dict:
+        """Calibrado para janelas de 250ms do 6J CME MBP-10."""
+        return {
             "ASIAN": {
                 "vol_percentiles": {"50": 20,  "75": 40,  "90": 80,  "95": 120, "99": 200},
                 "imb_percentiles": {"50": 8,   "75": 15,  "90": 30,  "95": 50,  "99": 80},
@@ -223,65 +51,272 @@ class SignatureProfiler:
                 "imb_percentiles": {"50": 5,   "75": 10,  "90": 20,  "95": 35,  "99": 60},
             },
         }
-        return fallbacks.get(sess, fallbacks["OFF_HOURS"])
 
-    def _generate_empirical_percentiles(self, sig_df, perc_df) -> dict:
+    # ── Build principal ────────────────────────────────────────────────────────────────
+
+    def build_profile(
+        self,
+        filter_dates: Optional[List[str]] = None,
+        output_path:  Optional[str]       = None,
+    ) -> dict:
+        """
+        Gera profile_calibrated.json a partir dos clusters no DuckDB.
+
+        filter_dates: lista de strings 'YYYY-MM-DD' para restringir o período.
+        output_path:  sobrescreve self.profile_path se fornecido.
+
+        Estrutura do output:
+        {
+          "metadata":           { generated_at, symbol, window_ms, has_depth_calibration },
+          "thresholds":         { SESSION: { vol_percentiles, imb_percentiles } },
+          "signatures":         { "sig_SESSION": { win_rate, profit_factor, count } },
+          "depth_multipliers":  { "sig": { "shallow": float, "mid": 1.0, "deep": float } }
+        }
+        """
+        date_filter = ""
+        if filter_dates:
+            safe = [d.replace(chr(39), "") for d in filter_dates]
+            placeholders = ",".join(f"'{d}'" for d in safe)
+            date_filter = f"AND DATE(lc.timestamp) IN ({placeholders})"
+
+        # ── 1. Percentis de volume e desequilíbrio por sessão ────────────────────
+        threshold_sql = f"""
+        SELECT
+            session,
+            COUNT(*)                                          AS n,
+            QUANTILE_CONT(total_bid + total_ask, 0.50)        AS vol_p50,
+            QUANTILE_CONT(total_bid + total_ask, 0.75)        AS vol_p75,
+            QUANTILE_CONT(total_bid + total_ask, 0.90)        AS vol_p90,
+            QUANTILE_CONT(total_bid + total_ask, 0.95)        AS vol_p95,
+            QUANTILE_CONT(total_bid + total_ask, 0.99)        AS vol_p99,
+            QUANTILE_CONT(ABS(total_bid - total_ask), 0.50)   AS imb_p50,
+            QUANTILE_CONT(ABS(total_bid - total_ask), 0.75)   AS imb_p75,
+            QUANTILE_CONT(ABS(total_bid - total_ask), 0.90)   AS imb_p90,
+            QUANTILE_CONT(ABS(total_bid - total_ask), 0.95)   AS imb_p95,
+            QUANTILE_CONT(ABS(total_bid - total_ask), 0.99)   AS imb_p99
+        FROM liquidity_clusters lc
+        WHERE symbol = '{self.symbol}' {date_filter}
+        GROUP BY session
+        """
+        thresh_rows = self.repo.conn.execute(threshold_sql).fetchall()
+
+        fallback = self._get_fallback_thresholds()
+        thresholds: Dict = {}
+        for row in thresh_rows:
+            (session, n,
+             vp50, vp75, vp90, vp95, vp99,
+             ip50, ip75, ip90, ip95, ip99) = row
+            if n < MIN_SAMPLES:
+                logging.warning("[Profiler] Sessão %s com %d amostras — usando fallback.", session, n)
+                thresholds[session] = fallback.get(session, fallback["OFF_HOURS"])
+            else:
+                thresholds[session] = {
+                    "vol_percentiles": {"50": vp50, "75": vp75, "90": vp90, "95": vp95, "99": vp99},
+                    "imb_percentiles": {"50": ip50, "75": ip75, "90": ip90, "95": ip95, "99": ip99},
+                }
+        for sess in fallback:
+            if sess not in thresholds:
+                thresholds[sess] = fallback[sess]
+
+        # ── 2. MFE/MAE por (assinatura, sessão) ───────────────────────────────────
+        mfe_sql = f"""
+        WITH future AS (
+            SELECT
+                lc.symbol,
+                lc.timestamp_ns                        AS c_ts_ns,
+                lc.price                               AS c_price,
+                lc.behavior_signature                  AS sig,
+                lc.session,
+                MAX(te.price)                          AS max_future,
+                MIN(te.price)                          AS min_future
+            FROM liquidity_clusters lc
+            JOIN tape_events te
+                ON  te.symbol       = lc.symbol
+                AND (
+                    CASE
+                        WHEN lc.timestamp_ns IS NOT NULL AND te.timestamp_ns IS NOT NULL
+                        THEN te.timestamp_ns BETWEEN lc.timestamp_ns
+                                                 AND lc.timestamp_ns + {FUTURE_WINDOW_NS}
+                        ELSE te.timestamp BETWEEN lc.timestamp
+                                              AND lc.timestamp + INTERVAL 30 SECOND
+                    END
+                )
+            WHERE lc.symbol = '{self.symbol}' {date_filter}
+              AND lc.behavior_signature <> 'unknown'
+            GROUP BY lc.symbol, lc.timestamp_ns, lc.price, lc.behavior_signature, lc.session
+        ),
+        metrics AS (
+            SELECT
+                sig,
+                session,
+                CASE
+                    WHEN sig IN ('iceberg_accumulation','breakout_genuine','defense_line')
+                         THEN max_future - c_price
+                    WHEN sig IN ('iceberg_distribution','absorption_passive')
+                         THEN c_price - min_future
+                    ELSE GREATEST(max_future - c_price, c_price - min_future)
+                END AS mfe,
+                CASE
+                    WHEN sig IN ('iceberg_accumulation','breakout_genuine','defense_line')
+                         THEN c_price - min_future
+                    WHEN sig IN ('iceberg_distribution','absorption_passive')
+                         THEN max_future - c_price
+                    ELSE 0
+                END AS mae
+            FROM future
+        )
+        SELECT
+            sig,
+            session,
+            COUNT(*)                   AS cnt,
+            AVG(mfe)                   AS avg_mfe,
+            AVG(mae)                   AS avg_mae,
+            SUM(CASE WHEN mfe > mae THEN 1 ELSE 0 END) * 1.0 / COUNT(*) AS win_rate,
+            CASE WHEN AVG(mae) > 0 THEN AVG(mfe) / AVG(mae) ELSE 0 END  AS profit_factor
+        FROM metrics
+        GROUP BY sig, session
+        ORDER BY sig, session
+        """
+        sig_rows = self.repo.conn.execute(mfe_sql).fetchall()
+
+        signatures: Dict = {}
+        for (sig, session, cnt, avg_mfe, avg_mae, win_rate, pf) in sig_rows:
+            key = f"{sig}_{session}"
+            signatures[key] = {
+                "win_rate":      round(win_rate or 0.0, 4),
+                "profit_factor": round(pf      or 0.0, 4),
+                "avg_mfe":       round(avg_mfe  or 0.0, 6),
+                "avg_mae":       round(avg_mae  or 0.0, 6),
+                "count":         int(cnt),
+            }
+
+        # ── 3. Depth multipliers por (assinatura, depth_band) ──────────────────────
+        # Apenas para assinaturas depth-sensitive: spoofing_wall, iceberg_*
+        # Ancora mid=1.0 para que o multiplier seja relativo, não absoluto.
+        # Se depth_band não tem MIN_DEPTH_SAMPLES, não gera multiplier (engine usa 1.0).
+        depth_sql = f"""
+        WITH future AS (
+            SELECT
+                lc.symbol,
+                lc.timestamp_ns                        AS c_ts_ns,
+                lc.price                               AS c_price,
+                lc.behavior_signature                  AS sig,
+                lc.session,
+                lc.dom_min_level,
+                CASE
+                    WHEN lc.dom_min_level <= 2 THEN 'shallow'
+                    WHEN lc.dom_min_level <= 5 THEN 'mid'
+                    ELSE 'deep'
+                END                                    AS depth_band,
+                MAX(te.price)                          AS max_future,
+                MIN(te.price)                          AS min_future
+            FROM liquidity_clusters lc
+            JOIN tape_events te
+                ON  te.symbol = lc.symbol
+                AND (
+                    CASE
+                        WHEN lc.timestamp_ns IS NOT NULL AND te.timestamp_ns IS NOT NULL
+                        THEN te.timestamp_ns BETWEEN lc.timestamp_ns
+                                                 AND lc.timestamp_ns + {FUTURE_WINDOW_NS}
+                        ELSE te.timestamp BETWEEN lc.timestamp
+                                              AND lc.timestamp + INTERVAL 30 SECOND
+                    END
+                )
+            WHERE lc.symbol      = '{self.symbol}' {date_filter}
+              AND lc.dom_min_level IS NOT NULL
+              AND lc.behavior_signature IN (
+                  'spoofing_wall', 'iceberg_accumulation', 'iceberg_distribution'
+              )
+            GROUP BY lc.symbol, lc.timestamp_ns, lc.price,
+                     lc.behavior_signature, lc.session, lc.dom_min_level
+        ),
+        metrics AS (
+            SELECT
+                sig,
+                depth_band,
+                CASE
+                    WHEN sig IN ('iceberg_accumulation')
+                         THEN max_future - c_price
+                    WHEN sig IN ('iceberg_distribution')
+                         THEN c_price - min_future
+                    ELSE GREATEST(max_future - c_price, c_price - min_future)
+                END AS mfe,
+                CASE
+                    WHEN sig IN ('iceberg_accumulation')
+                         THEN c_price - min_future
+                    WHEN sig IN ('iceberg_distribution')
+                         THEN max_future - c_price
+                    ELSE 0
+                END AS mae
+            FROM future
+        ),
+        win_by_band AS (
+            SELECT
+                sig,
+                depth_band,
+                COUNT(*)                                                      AS cnt,
+                SUM(CASE WHEN mfe > mae THEN 1 ELSE 0 END) * 1.0 / COUNT(*)  AS win_rate
+            FROM metrics
+            GROUP BY sig, depth_band
+        )
+        SELECT sig, depth_band, cnt, win_rate
+        FROM win_by_band
+        ORDER BY sig, depth_band
+        """
+        depth_rows = self.repo.conn.execute(depth_sql).fetchall()
+
+        # Agrega por sig: calcula multiplier relativo ao mid
+        raw_bands: Dict[str, Dict[str, Dict]] = {}
+        for (sig, band, cnt, wr) in depth_rows:
+            raw_bands.setdefault(sig, {})[band] = {"cnt": int(cnt), "win_rate": float(wr or 0.0)}
+
+        depth_multipliers: Dict[str, Dict[str, float]] = {}
+        has_depth = False
+
+        for sig, bands in raw_bands.items():
+            mid_wr = bands.get("mid", {}).get("win_rate", 0.0)
+            if mid_wr == 0.0:
+                continue  # sem ancora, não gera multiplier
+
+            sig_mults: Dict[str, float] = {}
+            for band in ("shallow", "mid", "deep"):
+                info = bands.get(band, {})
+                if info.get("cnt", 0) < MIN_DEPTH_SAMPLES:
+                    continue  # amostras insuficientes — engine usa 1.0
+                raw_mult = info["win_rate"] / mid_wr
+                # Clamp [0.5, 2.0] para evitar multiplicadores explosivos
+                sig_mults[band] = round(max(0.5, min(2.0, raw_mult)), 4)
+
+            if sig_mults:
+                # Garante que mid=1.0 exatamente (ancora)
+                sig_mults["mid"] = 1.0
+                depth_multipliers[sig] = sig_mults
+                has_depth = True
+                logging.info(
+                    "[Profiler] depth_multipliers %s: %s",
+                    sig, sig_mults
+                )
+
+        # ── 4. Monta e persiste o profile ──────────────────────────────────────────
         profile = {
             "metadata": {
-                "generated_at": datetime.now().isoformat(),
-                "type":         "empirical_percentiles_duckdb",
-                "window_ms":    250,
+                "generated_at":          datetime.utcnow().isoformat(),
+                "symbol":                self.symbol,
+                "window_ms":             250,
+                "has_depth_calibration": has_depth,
             },
-            "signatures": {},
-            "thresholds": {},
+            "thresholds":        thresholds,
+            "signatures":        signatures,
+            "depth_multipliers": depth_multipliers,
         }
 
-        for _, row in sig_df.iterrows():
-            sig   = row["behavior_signature"]
-            sess  = row["session"]
-            count = row["cluster_count"]
-            if not sig or not sess or not count or count == 0:
-                continue
-            wins         = row["wins"] or 0
-            gross_profit = row["total_gross_profit"] or 0
-            gross_loss   = row["total_gross_loss"]   or 0
-            pf = (gross_profit / gross_loss) if gross_loss and gross_loss > 0 else float("inf")
-            profile["signatures"][f"{sig}_{sess}"] = {
-                "count":         int(count),
-                "win_rate":      round(wins / count, 3),
-                "profit_factor": round(pf, 2),
-                "avg_mfe":       round(row["avg_mfe"] or 0, 5),
-            }
-
-        MIN_SAMPLES = 100
-        for _, row in perc_df.iterrows():
-            sess  = row["session"]
-            count = row["session_count"]
-            if not sess:
-                continue
-            if not count or count < MIN_SAMPLES:
-                logger.warning(
-                    "[Profiler] Sessao %s com %s amostras (< %d) — usando fallback 250ms",
-                    sess, count, MIN_SAMPLES,
-                )
-                profile["thresholds"][sess] = self._get_fallback_thresholds(sess)
-                continue
-            profile["thresholds"][sess] = {
-                "vol_percentiles": {
-                    "50": float(row["vol_p50"]), "75": float(row["vol_p75"]),
-                    "90": float(row["vol_p90"]), "95": float(row["vol_p95"]),
-                    "99": float(row["vol_p99"]),
-                },
-                "imb_percentiles": {
-                    "50": float(row["imb_p50"]), "75": float(row["imb_p75"]),
-                    "90": float(row["imb_p90"]), "95": float(row["imb_p95"]),
-                    "99": float(row["imb_p99"]),
-                },
-            }
-
-        return profile
-
-    def save_profile(self, profile: dict, path: str = "profile.json"):
-        with open(path, "w") as f:
+        out_path = output_path or self.profile_path
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as f:
             json.dump(profile, f, indent=2, default=str)
-        logger.info("[Profiler] Empirical Profile saved to %s", path)
+
+        logging.info(
+            "[Profiler] profile salvo em %s | %d assinaturas | depth_calibration=%s",
+            out_path, len(signatures), has_depth
+        )
+        return profile
