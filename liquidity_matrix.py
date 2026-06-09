@@ -113,27 +113,27 @@ class LiquidityMatrix:
                 self.ingest_cluster(cluster)
 
     def get_price_matrix(self, price: float) -> Dict:
-        p        = self.normalize_price(price)
+        p = self.normalize_price(price)
         with self.lock:
             clusters = [c for bucket in self.matrix.get(p, {}).values() for c in bucket]
             doms     = [d for bucket in self.dom_snapshots.get(p, {}).values() for d in bucket]
             tapes    = [t for bucket in self.tape_index.get(p, {}).values() for t in bucket]
             all_ts   = [c.timestamp for c in clusters] + [d.timestamp for d in doms] + [t.timestamp for t in tapes]
         return {
-            "symbol":                       self.symbol,
-            "price":                        p,
-            "cluster_count":                len(clusters),
-            "dom_count":                    len(doms),
-            "tape_count":                   len(tapes),
+            "symbol":                         self.symbol,
+            "price":                          p,
+            "cluster_count":                  len(clusters),
+            "dom_count":                      len(doms),
+            "tape_count":                     len(tapes),
             "cluster_signature_distribution": dict(Counter(c.behavior_signature.value for c in clusters)),
-            "dom_total_bid":                sum(d.bid_volume for d in doms),
-            "dom_total_ask":                sum(d.ask_volume for d in doms),
-            "tape_total_volume":            sum(t.volume for t in tapes),
-            "tape_buy_volume":              sum(t.volume for t in tapes if t.side.value == "buy"),
-            "tape_sell_volume":             sum(t.volume for t in tapes if t.side.value == "sell"),
-            "avg_confidence":               mean(c.confidence for c in clusters) if clusters else 0.0,
-            "first_seen":                   min(all_ts) if all_ts else None,
-            "last_seen":                    max(all_ts) if all_ts else None,
+            "dom_total_bid":                  sum(d.bid_volume for d in doms),
+            "dom_total_ask":                  sum(d.ask_volume for d in doms),
+            "tape_total_volume":              sum(t.volume for t in tapes),
+            "tape_buy_volume":                sum(t.volume for t in tapes if t.side.value == "buy"),
+            "tape_sell_volume":               sum(t.volume for t in tapes if t.side.value == "sell"),
+            "avg_confidence":                 mean(c.confidence for c in clusters) if clusters else 0.0,
+            "first_seen":                     min(all_ts) if all_ts else None,
+            "last_seen":                      max(all_ts) if all_ts else None,
         }
 
     def hotspots(self, min_occurrences: int = 3) -> List[Dict]:
@@ -151,13 +151,27 @@ class LiquidityMatrix:
                     "total_bid":          sum(c.total_bid for c in clusters),
                     "total_ask":          sum(c.total_ask for c in clusters),
                     "first":              min(c.timestamp for c in clusters),
-                    "last":               max(c.timestamp for c in clusters),
+                    "last":              max(c.timestamp for c in clusters),
                 })
         return sorted(out, key=lambda x: x["occurrences"], reverse=True)
 
-    def prune_stale_data(self, hours: int = 4):
-        cutoff_ts = datetime.now(timezone.utc) - timedelta(hours=hours)
+    def prune_stale_data(self, hours: int = 4, reference_time: Optional[datetime] = None):
+        """
+        Remove buckets mais antigos que `hours` horas.
+
+        reference_time: tempo de referência para o corte.
+          - None (default): usa datetime.now(UTC) — correto para produção ao vivo.
+          - datetime explícito: usa o timestamp de mercado passado — obrigatório
+            no backtest para evitar que dados históricos (2025) sejam prunados
+            imediatamente por um cutoff ancorado no relógio da parede (2026).
+        """
+        ref = reference_time if reference_time is not None else datetime.now(timezone.utc)
+        # Garante timezone-aware para comparacao segura
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        cutoff_ts  = ref - timedelta(hours=hours)
         cutoff_str = cutoff_ts.strftime("%Y-%m-%d %H:%M")
+
         with self.lock:
             for p in list(self.matrix.keys()):
                 for t in list(self.matrix[p].keys()):
@@ -181,6 +195,11 @@ class LiquidityMatrix:
                     del self.tape_index[p]
 
             for p in list(self.active_levels.keys()):
-                self.active_levels[p] = [c for c in self.active_levels[p] if c.timestamp >= cutoff_ts]
+                self.active_levels[p] = [
+                    c for c in self.active_levels[p]
+                    if c.timestamp.replace(tzinfo=timezone.utc) >= cutoff_ts
+                    if c.timestamp.tzinfo is None
+                    else c.timestamp >= cutoff_ts
+                ]
                 if not self.active_levels[p]:
                     del self.active_levels[p]

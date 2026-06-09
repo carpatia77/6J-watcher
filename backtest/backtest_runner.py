@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import logging
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -42,6 +42,17 @@ def _estimate_total_batches(file_path: Path, batch_size_seconds: int) -> int:
         return max(100, int(size_mb * batches_per_mb))
     except Exception:
         return 1000
+
+
+def _parse_market_ts(timestamp_str: str) -> Optional[datetime]:
+    """Parseia timestamp de tape_row para datetime UTC. Retorna None em caso de falha."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(timestamp_str, fmt)
+            return dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
 
 
 class BacktestRunner:
@@ -82,8 +93,10 @@ class BacktestRunner:
             "processing_time_seconds": 0.0, "report": "",
         }
 
+        # Timestamp de mercado do último batch processado — usado por prune e CHECKPOINT
+        self._last_market_ts: Optional[datetime] = None
+
     def run(self, start: date, end: date, symbol: str = "6J", skip_download: bool = False) -> Dict:
-        # Reset por mês — métricas acumuladas distorciam relatório e checkpoint timing
         self.metrics = {
             "total_batches": 0, "total_tape_events": 0, "total_dom_levels": 0,
             "total_clusters": 0, "signature_counts": {}, "hotspots": [],
@@ -96,9 +109,6 @@ class BacktestRunner:
         estimated_batches = _estimate_total_batches(file_path, self.batch_size_seconds)
         label = f"{start.strftime('%b/%Y')}"
 
-        # ─ Progress bar ─────────────────────────────────────────────
-        # ascii=True: usa apenas [-########] — evita UnicodeEncodeError no Windows CP1252
-        # file=sys.stderr: separa barra de progresso do log em arquivo
         if TQDM_AVAILABLE:
             pbar = tqdm(
                 total=estimated_batches, desc=f"  {label}", unit="batch",
@@ -111,17 +121,24 @@ class BacktestRunner:
             pbar = None
             logger.warning("tqdm nao instalado. Execute: pip install tqdm")
 
-        # ─ Stream de batches → pipeline ────────────────────────────
-        for tape_rows, _ in self.adapter.stream_batches(file_path, skip_dom=self.skip_dom):
-            clusters = self.service.ingest_batch(tape_rows, [], symbol)
+        for tape_rows, dom_rows in self.adapter.stream_batches(file_path, skip_dom=self.skip_dom):
+            # dom_rows agora entra no pipeline quando skip_dom=False
+            clusters = self.service.ingest_batch(tape_rows, dom_rows, symbol)
 
             self.metrics["total_batches"]     += 1
             self.metrics["total_tape_events"] += len(tape_rows)
+            self.metrics["total_dom_levels"]  += len(dom_rows)
             self.metrics["total_clusters"]    += len(clusters)
 
             for c in clusters:
                 sig = c.behavior_signature.value
                 self.metrics["signature_counts"][sig] = self.metrics["signature_counts"].get(sig, 0) + 1
+
+            # Atualiza timestamp de mercado a partir do último tape event do batch
+            if tape_rows:
+                ts = _parse_market_ts(tape_rows[-1].get("timestamp", ""))
+                if ts:
+                    self._last_market_ts = ts
 
             if pbar:
                 pbar.set_postfix_str(str(self.metrics["total_clusters"]))
@@ -132,8 +149,13 @@ class BacktestRunner:
                     self.metrics["total_batches"], self.metrics["total_batches"] / elapsed,
                     self.metrics["total_clusters"])
 
+            # CHECKPOINT + prune a cada 500 batches
+            # prune usa tempo de mercado do batch — evita amnesia total no backtest
             if self.metrics["total_batches"] % 500 == 0:
                 self.repo.conn.execute("CHECKPOINT")
+                if self._last_market_ts:
+                    self.matrix.prune_stale_data(hours=4, reference_time=self._last_market_ts)
+                    logger.info("[prune] Matriz podada @ %s", self._last_market_ts.isoformat())
 
         if pbar:
             pbar.n = pbar.total
@@ -144,7 +166,6 @@ class BacktestRunner:
         logger.info("=== Mes %s stream OK em %.1fs | %d batches | %d clusters ===",
             label, elapsed_s, self.metrics["total_batches"], self.metrics["total_clusters"])
 
-        # ─ SignatureProfiler ──────────────────────────────────────
         self.repo.commit()
 
         if self.skip_profiler:
@@ -164,7 +185,6 @@ class BacktestRunner:
             except Exception:
                 logger.exception("[Profiler] Falha na calibragem — continuando sem atualizar profile:")
 
-        # ─ Hotspots e relatório ─────────────────────────────────
         hotspots      = self.matrix.hotspots(min_occurrences=self.cfg.min_occurrences)
         sig_dist      = self.repo.signature_distribution(symbol)
         sess_analysis = self.repo.session_analysis(symbol)
