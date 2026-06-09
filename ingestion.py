@@ -9,6 +9,7 @@ Orquestra o pipeline completo de ingestão:
   4. Classifica assinatura comportamental (micro-janelas de 250ms)
   5. Devolve clusters gerados
 """
+import bisect
 import logging
 import time
 from collections import defaultdict
@@ -27,10 +28,10 @@ _WINDOW_NS = 250_000_000
 class IngestionService:
     def __init__(self, repo: DuckDBRepository, matrix: LiquidityMatrix,
                  engine: AdaptivePatternEngine, cfg: Config, narrator=None):
-        self.repo    = repo
-        self.matrix  = matrix
-        self.engine  = engine
-        self.cfg     = cfg
+        self.repo     = repo
+        self.matrix   = matrix
+        self.engine   = engine
+        self.cfg      = cfg
         self.narrator = narrator
 
         row = repo.conn.execute(
@@ -44,61 +45,58 @@ class IngestionService:
                 self.last_closed_price
             )
 
-    # ── DOM index ───────────────────────────────────────────────────────────────────────
+    # ── DOM index ─────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _build_dom_index(
         dom_rows: List[Dict],
         tick_size: float,
         top_n: int = 5,
-    ) -> Dict[int, Dict[int, Tuple[int, int]]]:
+    ) -> Dict[int, List[Tuple[int, int, int]]]:
         """
-        Pré-indexa dom_rows por (price_key, timestamp_ns) uma única vez por batch.
+        Pré-indexa dom_rows uma única vez por batch.
 
         Estrutura retornada:
-            index[price_key][timestamp_ns] = (bid_sum, ask_sum)
+            index[price_key] = sorted list of (ts_ns, bid_sum, ask_sum)
 
-        price_key = round(price / tick_size)  — inteiro, evita drift de float.
+        price_key = round(price / tick_size)  — inteiro, sem drift de float.
         Apenas os top_n níveis (level_index < top_n) são considerados.
+        Lista mantida ordenada por ts_ns para bisect O(log K) em _dom_at.
 
-        Complexidade: O(D) onde D = len(dom_rows).
-        Lookup subsequente: O(log K) com bisect sobre K timestamps únicos por preço.
-        Na prática K é pequîano (~snapshots por minuto), lookup é efetivamente O(1).
+        Complexidade: O(D log D) build, O(log K) lookup.
+        D = len(dom_rows), K = snapshots únicos por preço (tipicamente < 100).
         """
         if not dom_rows or tick_size <= 0:
             return {}
 
-        # Acumula bid/ask por (price_key, timestamp_ns)
         acc: Dict[Tuple[int, int], Tuple[int, int]] = {}
         for row in dom_rows:
             ts_ns = row.get("timestamp_ns")
             if ts_ns is None:
                 continue
-            idx = row.get("level_index", top_n)
-            if idx >= top_n:
+            if row.get("level_index", top_n) >= top_n:
                 continue
-            pk = round(row.get("price", 0.0) / tick_size)
+            pk  = round(row.get("price", 0.0) / tick_size)
             key = (pk, ts_ns)
             b, a = acc.get(key, (0, 0))
             acc[key] = (b + row.get("bid_volume", 0),
                         a + row.get("ask_volume", 0))
 
-        # Reorganiza: index[price_key] = sorted list of (ts_ns, bid, ask)
+        # Agrupa por price_key e ordena por ts_ns — lista pronta para bisect
         grouped: Dict[int, List[Tuple[int, int, int]]] = defaultdict(list)
         for (pk, ts_ns), (b, a) in acc.items():
             grouped[pk].append((ts_ns, b, a))
 
-        # Ordena por ts_ns para permitir bisect
-        index: Dict[int, Dict[int, Tuple[int, int]]] = {}
+        index: Dict[int, List[Tuple[int, int, int]]] = {}
         for pk, entries in grouped.items():
-            entries.sort()  # sort by ts_ns (first element)
-            index[pk] = {ts: (b, a) for ts, b, a in entries}
+            entries.sort()          # ordena por ts_ns (primeiro elemento da tupla)
+            index[pk] = entries     # lista já ordenada, reutilizada diretamente
 
         return index
 
     def _dom_at(
         self,
-        dom_index: Dict[int, Dict[int, Tuple[int, int]]],
+        dom_index: Dict[int, List[Tuple[int, int, int]]],
         price: float,
         end_ns: int,
     ) -> Tuple[int, int]:
@@ -106,19 +104,27 @@ class IngestionService:
         Retorna (dom_bid, dom_ask) do snapshot DOM mais recente com
         timestamp_ns <= end_ns para o price_key dado.
 
-        O(log K) com K = número de snapshots para aquele preço (tipicamente < 100).
+        O(log K) via bisect sobre lista pré-ordenada — sem rebuild a cada chamada.
         """
-        pk = round(price / self.cfg.tick_size)
-        ts_map = dom_index.get(pk)
-        if not ts_map:
+        pk      = round(price / self.cfg.tick_size)
+        entries = dom_index.get(pk)
+        if not entries:
             return (0, 0)
 
-        import bisect
-        keys = sorted(ts_map.keys())          # lista ordenada de timestamps
-        pos  = bisect.bisect_right(keys, end_ns) - 1
+        # bisect_right sobre ts_ns (elemento 0 de cada tupla)
+        # Usa chave lambda para comparar apenas o primeiro elemento
+        lo, hi = 0, len(entries)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if entries[mid][0] <= end_ns:
+                lo = mid + 1
+            else:
+                hi = mid
+        pos = lo - 1
         if pos < 0:
             return (0, 0)
-        return ts_map[keys[pos]]
+        _, b, a = entries[pos]
+        return (b, a)
 
     # ── Micro-agregação em janelas de 250ms ───────────────────────────────────────
 
@@ -139,19 +145,17 @@ class IngestionService:
           - dom_bid / dom_ask injetados via _dom_at() no fechamento
 
         Fallback para produção MQL5 sem timestamp_ns:
-          Cada TapeEvent gera sua própria janela (comportamento conservador,
-          sem regressão no pipeline de produção).
+          Cada TapeEvent gera sua própria janela (sem regressão).
         """
         if not tape:
             return []
 
         clusters: List[LiquidityCluster] = []
 
-        # Estado da janela corrente
-        w_start_ns:    Optional[int]      = None
-        w_first_price: Optional[float]    = None
-        w_last_price:  Optional[float]    = None
-        w_ts                              = None
+        w_start_ns:    Optional[int]   = None
+        w_first_price: Optional[float] = None
+        w_last_price:  Optional[float] = None
+        w_ts                           = None
         total_bid = total_ask = 0
         cumdelta = deltamin = deltamax = 0
 
@@ -190,7 +194,6 @@ class IngestionService:
             clusters.append(c)
             self.last_closed_price = w_last_price
 
-            # reset
             total_bid = total_ask = cumdelta = deltamin = deltamax = 0
             w_start_ns = w_first_price = w_last_price = w_ts = None
 
@@ -200,19 +203,16 @@ class IngestionService:
             side = e.side.value
 
             if e_ns is not None:
-                # ─ caminho backtest: agregação temporal real ─
                 if w_start_ns is None:
                     w_start_ns    = e_ns
                     w_first_price = e.price
                     w_ts          = e.timestamp
-
                 elif e_ns - w_start_ns >= _WINDOW_NS:
                     _flush(e_ns - 1)
                     w_start_ns    = e_ns
                     w_first_price = e.price
                     w_ts          = e.timestamp
             else:
-                # ─ caminho produção sem ts_ns: flush anterior, janela isolada ─
                 if w_ts is not None:
                     _flush(0)
                 w_start_ns    = 0
@@ -225,11 +225,10 @@ class IngestionService:
             else:
                 total_ask += vol
                 cumdelta  -= vol
-            deltamin      = min(deltamin, cumdelta)
-            deltamax      = max(deltamax, cumdelta)
-            w_last_price  = e.price
+            deltamin     = min(deltamin, cumdelta)
+            deltamax     = max(deltamax, cumdelta)
+            w_last_price = e.price
 
-        # Flush da última janela incompleta
         if w_ts is not None:
             last_ns = tape[-1].raw.get("timestamp_ns") or 0
             _flush(last_ns)
@@ -243,7 +242,15 @@ class IngestionService:
         tape_rows: List[Dict],
         dom_rows:  List[Dict],
         symbol:    str,
+        top_n:     int = 5,
     ) -> List[LiquidityCluster]:
+        """
+        Processa um batch de eventos T&S + DOM.
+
+        top_n: número de níveis do Book a considerar no snapshot DOM.
+               Default=5. Use top_n=10 para capturar Icebergs em níveis
+               mais profundos (6-10) sem custo computacional proibitivo.
+        """
         tape = parse_tape_rows(tape_rows, symbol)
         dom  = parse_dom_rows(dom_rows, symbol)
 
@@ -263,12 +270,12 @@ class IngestionService:
 
         batch_id = str(time.time_ns())
 
-        # Pré-indexa DOM uma vez por batch: O(D) — evita O(D * W) no loop de janelas
-        dom_index = self._build_dom_index(dom_rows, self.cfg.tick_size, top_n=5)
+        # Pré-indexa DOM uma vez por batch: O(D log D)
+        # top_n configurável: 5 para produção, 10 para capturar níveis profundos
+        dom_index = self._build_dom_index(dom_rows, self.cfg.tick_size, top_n=top_n)
 
         clusters = self._build_clusters_from_windows(tape, dom_index, symbol, batch_id)
 
-        # Persistência
         self.repo.begin()
         try:
             self.repo.insert_tape_events(tape)
@@ -279,7 +286,6 @@ class IngestionService:
             self.repo.rollback()
             raise
 
-        # Alimenta matrix e post-classifica
         snap = self.matrix.snapshot()
         try:
             self.matrix.build_from_events(tape, dom, clusters=clusters)
