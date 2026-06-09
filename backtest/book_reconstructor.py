@@ -21,25 +21,27 @@ class BookSnapshot:
     def to_dom_rows(self) -> List[Dict]:
         """
         Emite rows compatíveis com parse_dom_rows().
-        Timestamp em microsegundos (%f) para preservar ordenação causal no DuckDB.
+        Inclui timestamp_ns (BIGINT) além do timestamp string para JOIN rápido no DuckDB.
         """
         rows = []
         ts = self.timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")
         for lv in self.bid_levels:
             rows.append({
-                "timestamp": ts,
-                "price": lv["price"],
-                "level_index": lv["idx"],
-                "bid_volume": lv["size"],
-                "ask_volume": 0,
+                "timestamp":    ts,
+                "timestamp_ns": self.timestamp_ns,
+                "price":        lv["price"],
+                "level_index":  lv["idx"],
+                "bid_volume":   lv["size"],
+                "ask_volume":   0,
             })
         for lv in self.ask_levels:
             rows.append({
-                "timestamp": ts,
-                "price": lv["price"],
-                "level_index": lv["idx"],
-                "bid_volume": 0,
-                "ask_volume": lv["size"],
+                "timestamp":    ts,
+                "timestamp_ns": self.timestamp_ns,
+                "price":        lv["price"],
+                "level_index":  lv["idx"],
+                "bid_volume":   0,
+                "ask_volume":   lv["size"],
             })
         return rows
 
@@ -79,7 +81,8 @@ class BookReconstructor:
         if getattr(action, "value", action) != 84:
             return None
 
-        ts = datetime.fromtimestamp(record.ts_event / 1e9, timezone.utc)
+        ts_ns = record.ts_event
+        ts = datetime.fromtimestamp(ts_ns / 1e9, timezone.utc)
         price = record.price / FIXED_POINT
         size = getattr(record, "size", 0)
         if size == 0:
@@ -91,12 +94,12 @@ class BookReconstructor:
         elif side_char == "A":
             side = "sell"
         else:
-            # 'N' = neutro (spread leg, bloco institucional sem direção) — descarta
             return None
 
         return {
-            "timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.%f"),
-            "price": price,
-            "volume": size,
-            "side": side,
+            "timestamp":    ts.strftime("%Y-%m-%dT%H:%M:%S.%f"),
+            "timestamp_ns": ts_ns,
+            "price":        price,
+            "volume":       size,
+            "side":         side,
         }

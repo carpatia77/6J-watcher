@@ -58,27 +58,30 @@ class DuckDBRepository:
     def _init_schema(self):
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS tape_events (
-            symbol    VARCHAR,
-            timestamp TIMESTAMP,
-            price     DOUBLE,
-            volume    INTEGER,
-            side      VARCHAR,
-            raw       TEXT
+            symbol       VARCHAR,
+            timestamp    TIMESTAMP,
+            timestamp_ns BIGINT,
+            price        DOUBLE,
+            volume       INTEGER,
+            side         VARCHAR,
+            raw          TEXT
         )""")
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS dom_levels (
-            symbol      VARCHAR,
-            timestamp   TIMESTAMP,
-            price       DOUBLE,
-            level_index INTEGER,
-            bid_volume  INTEGER,
-            ask_volume  INTEGER,
-            raw         TEXT
+            symbol       VARCHAR,
+            timestamp    TIMESTAMP,
+            timestamp_ns BIGINT,
+            price        DOUBLE,
+            level_index  INTEGER,
+            bid_volume   INTEGER,
+            ask_volume   INTEGER,
+            raw          TEXT
         )""")
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS liquidity_clusters (
             symbol             VARCHAR,
             timestamp          TIMESTAMP,
+            timestamp_ns       BIGINT,
             price              DOUBLE,
             session            VARCHAR,
             behavior_signature VARCHAR,
@@ -93,11 +96,19 @@ class DuckDBRepository:
             batch_id           VARCHAR,
             raw_payload        TEXT
         )""")
-        
-        try:
-            self.conn.execute("ALTER TABLE liquidity_clusters ADD COLUMN batch_id VARCHAR")
-        except Exception:
-            pass  # coluna já existe
+
+        # Guards para bancos existentes sem as novas colunas
+        for tbl, col, typedef in [
+            ("tape_events",        "timestamp_ns", "BIGINT"),
+            ("dom_levels",         "timestamp_ns", "BIGINT"),
+            ("liquidity_clusters", "timestamp_ns", "BIGINT"),
+            ("liquidity_clusters", "batch_id",     "VARCHAR"),
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typedef}")
+            except Exception:
+                pass
+
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS key_levels (
             symbol             VARCHAR,
@@ -118,13 +129,15 @@ class DuckDBRepository:
             PRIMARY KEY (symbol, date)
         )""")
 
-        # Índices em liquidity_clusters
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_price ON liquidity_clusters(price)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_timestamp ON liquidity_clusters(timestamp)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts ON liquidity_clusters(symbol, timestamp)")
+        # Índices TIMESTAMP (produção)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_price         ON liquidity_clusters(price)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_timestamp     ON liquidity_clusters(timestamp)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts     ON liquidity_clusters(symbol, timestamp)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts     ON tape_events(symbol, timestamp)")
 
-        # Índice crítico em tape_events — sem isso o JOIN do SignatureProfiler é O(n²)
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts ON tape_events(symbol, timestamp)")
+        # Índices BIGINT (backtest) — usados pelo SignatureProfiler quando timestamp_ns IS NOT NULL
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts_ns  ON tape_events(symbol, timestamp_ns)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts_ns  ON liquidity_clusters(symbol, timestamp_ns)")
 
     def upsert_daily_report(self, symbol: str, date_str: str, report_text: str):
         self.conn.execute(
@@ -133,27 +146,71 @@ class DuckDBRepository:
             [symbol, date_str, report_text]
         )
 
-    # ── Inserts ───────────────────────────────────────────────────────────────
+    # ── Inserts ──────────────────────────────────────────────────────────────────────────
 
     def insert_tape_events(self, events: List[TapeEvent]):
-        rows = [[e.symbol, e.timestamp, e.price, e.volume, e.side.value, _j(e.raw)] for e in events]
+        # timestamp_ns vem do raw dict quando presente (backtest Databento)
+        # é NULL quando chamado do pipeline de produção MQL5 (sem ts_ns)
+        rows = [
+            [
+                e.symbol,
+                e.timestamp,
+                e.raw.get("timestamp_ns"),  # None → NULL no DuckDB
+                e.price,
+                e.volume,
+                e.side.value,
+                _j(e.raw),
+            ]
+            for e in events
+        ]
         if rows:
-            self.conn.executemany("INSERT INTO tape_events VALUES (?,?,?,?,?,?)", rows)
+            self.conn.executemany(
+                "INSERT INTO tape_events VALUES (?,?,?,?,?,?,?)", rows
+            )
 
     def insert_dom_levels(self, levels: List[DOMLevel]):
-        rows = [[l.symbol, l.timestamp, l.price, l.level_index, l.bid_volume, l.ask_volume, _j(l.raw)] for l in levels]
+        rows = [
+            [
+                l.symbol,
+                l.timestamp,
+                l.raw.get("timestamp_ns"),
+                l.price,
+                l.level_index,
+                l.bid_volume,
+                l.ask_volume,
+                _j(l.raw),
+            ]
+            for l in levels
+        ]
         if rows:
-            self.conn.executemany("INSERT INTO dom_levels VALUES (?,?,?,?,?,?,?)", rows)
+            self.conn.executemany(
+                "INSERT INTO dom_levels VALUES (?,?,?,?,?,?,?,?)", rows
+            )
 
     def insert_clusters(self, clusters: List[LiquidityCluster]):
         rows = [[
-            c.symbol, c.timestamp, c.price, c.session,
-            c.behavior_signature.value, c.total_ask, c.total_bid,
-            c.cumdelta, c.deltamin, c.deltamax, c.delta_price_ticks,
-            c.confidence, c.outcome, c.batch_id, _j(c.raw_payload)
+            c.symbol,
+            c.timestamp,
+            c.raw_payload.get("timestamp_ns"),  # None → NULL para produção
+            c.price,
+            c.session,
+            c.behavior_signature.value,
+            c.total_ask,
+            c.total_bid,
+            c.cumdelta,
+            c.deltamin,
+            c.deltamax,
+            c.delta_price_ticks,
+            c.confidence,
+            c.outcome,
+            c.batch_id,
+            _j(c.raw_payload),
         ] for c in clusters]
         if rows:
-            self.conn.executemany("INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            self.conn.executemany(
+                "INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
 
     def upsert_key_level(self, level: KeyLevel):
         self.conn.execute(
@@ -169,7 +226,7 @@ class DuckDBRepository:
             [level.symbol, level.price, level.occurrences, level.first_seen,
              level.last_seen, level.dominant_signature, level.days_active, level.reliability_score])
 
-    # ── Queries ───────────────────────────────────────────────────────────────
+    # ── Queries ──────────────────────────────────────────────────────────────────────────
 
     def signature_distribution(self, symbol: str) -> List:
         return self.conn.execute(

@@ -36,6 +36,9 @@ class SignatureProfiler:
             raise ValueError("horizon_minutes must be an int between 1 and 1440")
 
         tick_size = tick_size or self.cfg.tick_size
+        # Horizonte em nanossegundos para JOIN BIGINT (backtest)
+        horizon_ns = horizon_minutes * 60 * 1_000_000_000
+        # Fallback INTERVAL para dados de produção sem timestamp_ns
         interval_clause = f"INTERVAL '{int(horizon_minutes)}' MINUTE"
 
         if since:
@@ -44,7 +47,6 @@ class SignatureProfiler:
         else:
             cutoff = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
 
-        # Sanitização manual — symbol e cutoff são gerados internamente, sem input externo
         sym_safe    = symbol.replace("'", "")
         cutoff_safe = cutoff.replace("'", "")
 
@@ -57,6 +59,7 @@ class SignatureProfiler:
         WITH cluster_excursions AS (
             SELECT
                 c.timestamp,
+                c.timestamp_ns,
                 c.behavior_signature,
                 c.session,
                 (c.total_bid + c.total_ask)            AS total_vol,
@@ -70,12 +73,20 @@ class SignatureProfiler:
             FROM liquidity_clusters c
             LEFT JOIN tape_events t
               ON  c.symbol = t.symbol
-              AND t.timestamp > c.timestamp
-              AND t.timestamp <= c.timestamp + {interval_clause}
+              AND (
+                -- caminho rápido: BIGINT arithética quando timestamp_ns disponível
+                CASE WHEN c.timestamp_ns IS NOT NULL AND t.timestamp_ns IS NOT NULL
+                     THEN t.timestamp_ns > c.timestamp_ns
+                          AND t.timestamp_ns <= c.timestamp_ns + {horizon_ns}
+                     -- fallback TIMESTAMP para dados de produção sem ts_ns
+                     ELSE t.timestamp > c.timestamp
+                          AND t.timestamp <= c.timestamp + {interval_clause}
+                END
+              )
             WHERE c.symbol = '{sym_safe}'
               AND c.timestamp > '{cutoff_safe}'
               {filter_clause}
-            GROUP BY c.timestamp, c.behavior_signature, c.session,
+            GROUP BY c.timestamp, c.timestamp_ns, c.behavior_signature, c.session,
                      c.total_bid, c.total_ask, c.cumdelta, c.price
         ),
         mfe_mae_calc AS (
