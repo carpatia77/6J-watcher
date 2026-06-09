@@ -7,19 +7,22 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+
 class SignatureProfiler:
     """
     Calcula MFE/MAE via DuckDB CTE e gera Tabelas de Percentis Empíricos
     para normalização não-paramétrica de Order Flow.
+    Calibrado para micro-janelas de 250ms (ingestion.py _WINDOW_NS).
     """
+
     def __init__(self, db_path: str, cfg: Optional[Config] = None, conn=None):
         self.cfg = cfg or Config()
         self.db_path = db_path
         self.conn = conn if conn else duckdb.connect(db_path, read_only=True)
 
     def define_session(self, hour: int) -> str:
-        if 0 <= hour < 8:  return "ASIAN"
-        if 8 <= hour < 13: return "LONDON"
+        if 0 <= hour < 8:   return "ASIAN"
+        if 8 <= hour < 13:  return "LONDON"
         if 13 <= hour < 22: return "NEW_YORK"
         return "OFF_HOURS"
 
@@ -35,10 +38,8 @@ class SignatureProfiler:
         if not isinstance(horizon_minutes, int) or not (1 <= horizon_minutes <= 1440):
             raise ValueError("horizon_minutes must be an int between 1 and 1440")
 
-        tick_size = tick_size or self.cfg.tick_size
-        # Horizonte em nanossegundos para JOIN BIGINT (backtest)
-        horizon_ns = horizon_minutes * 60 * 1_000_000_000
-        # Fallback INTERVAL para dados de produção sem timestamp_ns
+        tick_size       = tick_size or self.cfg.tick_size
+        horizon_ns      = horizon_minutes * 60 * 1_000_000_000
         interval_clause = f"INTERVAL '{int(horizon_minutes)}' MINUTE"
 
         if since:
@@ -74,11 +75,9 @@ class SignatureProfiler:
             LEFT JOIN tape_events t
               ON  c.symbol = t.symbol
               AND (
-                -- caminho rápido: BIGINT arithética quando timestamp_ns disponível
                 CASE WHEN c.timestamp_ns IS NOT NULL AND t.timestamp_ns IS NOT NULL
                      THEN t.timestamp_ns > c.timestamp_ns
                           AND t.timestamp_ns <= c.timestamp_ns + {horizon_ns}
-                     -- fallback TIMESTAMP para dados de produção sem ts_ns
                      ELSE t.timestamp > c.timestamp
                           AND t.timestamp <= c.timestamp + {interval_clause}
                 END
@@ -91,21 +90,40 @@ class SignatureProfiler:
         ),
         mfe_mae_calc AS (
             SELECT *,
-                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine')
-                     THEN max_future_price - c_price
-                     ELSE c_price - min_future_price
+                -- P3: cada assinatura mapeada para sua direção esperada.
+                -- DEFENSE_LINE estava incorretamente no ELSE (bearish) antes deste fix.
+                -- spoofing_wall e liquidity_vacuum são neutros: usa excursão máxima.
+                CASE
+                    WHEN behavior_signature IN (
+                        'iceberg_accumulation', 'breakout_genuine', 'defense_line'
+                    ) THEN max_future_price - c_price
+                    WHEN behavior_signature IN (
+                        'iceberg_distribution', 'absorption_passive'
+                    ) THEN c_price - min_future_price
+                    ELSE GREATEST(
+                        max_future_price - c_price,
+                        c_price - min_future_price
+                    )
                 END AS mfe,
-                CASE WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine')
-                     THEN c_price - min_future_price
-                     ELSE max_future_price - c_price
+                CASE
+                    WHEN behavior_signature IN (
+                        'iceberg_accumulation', 'breakout_genuine', 'defense_line'
+                    ) THEN c_price - min_future_price
+                    WHEN behavior_signature IN (
+                        'iceberg_distribution', 'absorption_passive'
+                    ) THEN max_future_price - c_price
+                    ELSE GREATEST(
+                        max_future_price - c_price,
+                        c_price - min_future_price
+                    )
                 END AS mae
             FROM cluster_excursions
         ),
         scored AS (
             SELECT *,
                 CASE WHEN mfe > ABS(mae) AND mfe > 0 THEN 1 ELSE 0 END AS win,
-                CASE WHEN mfe > 0    THEN mfe       ELSE 0 END          AS gross_profit,
-                CASE WHEN mae < 0    THEN ABS(mae)  ELSE 0 END          AS gross_loss
+                CASE WHEN mfe > 0   THEN mfe      ELSE 0 END           AS gross_profit,
+                CASE WHEN mae < 0   THEN ABS(mae) ELSE 0 END           AS gross_loss
             FROM mfe_mae_calc
         ),
         sig_stats AS (
@@ -123,17 +141,17 @@ class SignatureProfiler:
         perc_stats AS (
             SELECT
                 session,
-                COUNT(*)                         AS session_count,
-                QUANTILE_CONT(total_vol, 0.50)   AS vol_p50,
-                QUANTILE_CONT(total_vol, 0.75)   AS vol_p75,
-                QUANTILE_CONT(total_vol, 0.90)   AS vol_p90,
-                QUANTILE_CONT(total_vol, 0.95)   AS vol_p95,
-                QUANTILE_CONT(total_vol, 0.99)   AS vol_p99,
-                QUANTILE_CONT(imbalance,  0.50)  AS imb_p50,
-                QUANTILE_CONT(imbalance,  0.75)  AS imb_p75,
-                QUANTILE_CONT(imbalance,  0.90)  AS imb_p90,
-                QUANTILE_CONT(imbalance,  0.95)  AS imb_p95,
-                QUANTILE_CONT(imbalance,  0.99)  AS imb_p99
+                COUNT(*)                        AS session_count,
+                QUANTILE_CONT(total_vol, 0.50)  AS vol_p50,
+                QUANTILE_CONT(total_vol, 0.75)  AS vol_p75,
+                QUANTILE_CONT(total_vol, 0.90)  AS vol_p90,
+                QUANTILE_CONT(total_vol, 0.95)  AS vol_p95,
+                QUANTILE_CONT(total_vol, 0.99)  AS vol_p99,
+                QUANTILE_CONT(imbalance,  0.50) AS imb_p50,
+                QUANTILE_CONT(imbalance,  0.75) AS imb_p75,
+                QUANTILE_CONT(imbalance,  0.90) AS imb_p90,
+                QUANTILE_CONT(imbalance,  0.95) AS imb_p95,
+                QUANTILE_CONT(imbalance,  0.99) AS imb_p99
             FROM scored
             GROUP BY session
         )
@@ -164,7 +182,7 @@ class SignatureProfiler:
         try:
             rows = self.conn.execute(full_query).fetchdf()
         except Exception as e:
-            logger.error(f"[Profiler] DuckDB execution failed: {e}")
+            logger.error("[Profiler] DuckDB execution failed: %s", e)
             raise
 
         sig_df  = rows[rows["result_type"] == "sig"].copy()
@@ -176,11 +194,34 @@ class SignatureProfiler:
         return self._generate_empirical_percentiles(sig_df, perc_df)
 
     def _get_fallback_thresholds(self, sess: str) -> dict:
+        """
+        Limiares calibrados para janelas de 250ms do 6J CME MBP-10.
+        Substitui valores de tick-único anteriores (5-11 lotes) que causavam
+        vol_p >= 90 em quase toda janela, colapsando tudo em ABSORPTION_PASSIVE.
+
+        Estimativas para distribuição típica de volume por janela de 250ms:
+          ASIAN:     10-80  lotes  (baixo volume pré-LONDON)
+          LONDON:    50-200 lotes  (abertura europeia)
+          NEW_YORK:  80-300 lotes  (overlap NY/London, pico de liquidez 6J)
+          OFF_HOURS: 5-60   lotes  (mínimo pós-fechamento NY)
+        """
         fallbacks = {
-            "ASIAN":     {"vol_percentiles": {"90": 10, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
-            "LONDON":    {"vol_percentiles": {"90": 11, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
-            "NEW_YORK":  {"vol_percentiles": {"90": 11, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
-            "OFF_HOURS": {"vol_percentiles": {"90": 10, "75": 5}, "imb_percentiles": {"90": 5, "75": 2}},
+            "ASIAN": {
+                "vol_percentiles": {"50": 20,  "75": 40,  "90": 80,  "95": 120, "99": 200},
+                "imb_percentiles": {"50": 8,   "75": 15,  "90": 30,  "95": 50,  "99": 80},
+            },
+            "LONDON": {
+                "vol_percentiles": {"50": 50,  "75": 100, "90": 200, "95": 300, "99": 500},
+                "imb_percentiles": {"50": 20,  "75": 40,  "90": 80,  "95": 120, "99": 200},
+            },
+            "NEW_YORK": {
+                "vol_percentiles": {"50": 70,  "75": 150, "90": 300, "95": 450, "99": 700},
+                "imb_percentiles": {"50": 30,  "75": 60,  "90": 120, "95": 180, "99": 300},
+            },
+            "OFF_HOURS": {
+                "vol_percentiles": {"50": 15,  "75": 30,  "90": 60,  "95": 90,  "99": 150},
+                "imb_percentiles": {"50": 5,   "75": 10,  "90": 20,  "95": 35,  "99": 60},
+            },
         }
         return fallbacks.get(sess, fallbacks["OFF_HOURS"])
 
@@ -188,7 +229,8 @@ class SignatureProfiler:
         profile = {
             "metadata": {
                 "generated_at": datetime.now().isoformat(),
-                "type": "empirical_percentiles_duckdb",
+                "type":         "empirical_percentiles_duckdb",
+                "window_ms":    250,
             },
             "signatures": {},
             "thresholds": {},
@@ -205,10 +247,10 @@ class SignatureProfiler:
             gross_loss   = row["total_gross_loss"]   or 0
             pf = (gross_profit / gross_loss) if gross_loss and gross_loss > 0 else float("inf")
             profile["signatures"][f"{sig}_{sess}"] = {
-                "count":          int(count),
-                "win_rate":       round(wins / count, 3),
-                "profit_factor":  round(pf, 2),
-                "avg_mfe":        round(row["avg_mfe"] or 0, 5),
+                "count":         int(count),
+                "win_rate":      round(wins / count, 3),
+                "profit_factor": round(pf, 2),
+                "avg_mfe":       round(row["avg_mfe"] or 0, 5),
             }
 
         MIN_SAMPLES = 100
@@ -218,7 +260,10 @@ class SignatureProfiler:
             if not sess:
                 continue
             if not count or count < MIN_SAMPLES:
-                logger.warning(f"[Profiler] Sessao {sess} com {count} amostras — usando fallback")
+                logger.warning(
+                    "[Profiler] Sessao %s com %s amostras (< %d) — usando fallback 250ms",
+                    sess, count, MIN_SAMPLES,
+                )
                 profile["thresholds"][sess] = self._get_fallback_thresholds(sess)
                 continue
             profile["thresholds"][sess] = {
@@ -239,4 +284,4 @@ class SignatureProfiler:
     def save_profile(self, profile: dict, path: str = "profile.json"):
         with open(path, "w") as f:
             json.dump(profile, f, indent=2, default=str)
-        logger.info(f"[Profiler] Empirical Profile saved to {path}")
+        logger.info("[Profiler] Empirical Profile saved to %s", path)
