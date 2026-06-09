@@ -101,7 +101,7 @@ class DatabentoAdapter:
                 batch_start_ns = ts_ns
 
             if (ts_ns - batch_start_ns) / 1e9 >= self.batch_size_seconds:
-                if tape_bufs["timestamp_ns"]:
+                if tape_bufs["timestamp_ns"] or dom_bufs["timestamp_ns"]:
                     yield _flush_arrow(tape_bufs, dom_bufs)
                 _clear(tape_bufs)
                 _clear(dom_bufs)
@@ -128,7 +128,7 @@ class DatabentoAdapter:
                         dom_bufs["bid_volume"].append(row["bid_volume"])
                         dom_bufs["ask_volume"].append(row["ask_volume"])
 
-        if tape_bufs["timestamp_ns"]:
+        if tape_bufs["timestamp_ns"] or dom_bufs["timestamp_ns"]:
             yield _flush_arrow(tape_bufs, dom_bufs)
 
     # ------------------------------------------------------------------
