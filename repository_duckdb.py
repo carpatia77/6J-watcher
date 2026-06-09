@@ -11,6 +11,12 @@ from typing import Any, Dict, List, Optional
 import duckdb
 from models import DOMLevel, KeyLevel, LiquidityCluster, TapeEvent
 
+try:
+    import pyarrow as pa
+    _ARROW_AVAILABLE = True
+except ImportError:
+    _ARROW_AVAILABLE = False
+
 
 def _j(obj: Any) -> str:
     return json.dumps(obj, default=str)
@@ -135,9 +141,73 @@ class DuckDBRepository:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts     ON liquidity_clusters(symbol, timestamp)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts     ON tape_events(symbol, timestamp)")
 
-        # Índices BIGINT (backtest) — usados pelo SignatureProfiler quando timestamp_ns IS NOT NULL
+        # Índices BIGINT (backtest)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts_ns  ON tape_events(symbol, timestamp_ns)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts_ns  ON liquidity_clusters(symbol, timestamp_ns)")
+        # Índice crítico para ASOF JOIN DOM na Fase 2
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_dom_symbol_ts_ns ON dom_levels(symbol, timestamp_ns)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_dom_price        ON dom_levels(price)")
+
+    # ── Bulk Insert Arrow (backtest path) ─────────────────────────────────────────────
+
+    def bulk_insert_arrow(
+        self,
+        symbol: str,
+        batch_id: str,
+        tape_rb: "pa.RecordBatch",
+        dom_rb:  "pa.RecordBatch",
+    ) -> None:
+        """
+        Insere tape_events e dom_levels via zero-copy Arrow → DuckDB.
+
+        O RecordBatch é registrado como view temporária e inserido com
+        uma única instrução SQL por tabela — sem loop Python, sem
+        executemany, sem serialização de dicts.
+
+        Campos `symbol`, `raw` e `batch_id` são injetados via SQL
+        (não existem no RecordBatch do adapter).
+        """
+        if not _ARROW_AVAILABLE:
+            raise ImportError("pyarrow não instalado. Execute: pip install pyarrow")
+
+        # tape_events
+        if tape_rb.num_rows > 0:
+            self.conn.register("_tape_rb", tape_rb)
+            self.conn.execute("""
+                INSERT INTO tape_events
+                    (symbol, timestamp, timestamp_ns, price, volume, side, raw)
+                SELECT
+                    ? AS symbol,
+                    timestamp::TIMESTAMP,
+                    timestamp_ns,
+                    price,
+                    volume,
+                    side,
+                    '{}'  AS raw
+                FROM _tape_rb
+            """, [symbol])
+            self.conn.unregister("_tape_rb")
+
+        # dom_levels
+        if dom_rb.num_rows > 0:
+            self.conn.register("_dom_rb", dom_rb)
+            self.conn.execute("""
+                INSERT INTO dom_levels
+                    (symbol, timestamp, timestamp_ns, price, level_index, bid_volume, ask_volume, raw)
+                SELECT
+                    ? AS symbol,
+                    timestamp::TIMESTAMP,
+                    timestamp_ns,
+                    price,
+                    level_index,
+                    bid_volume,
+                    ask_volume,
+                    '{}'  AS raw
+                FROM _dom_rb
+            """, [symbol])
+            self.conn.unregister("_dom_rb")
+
+    # ── Inserts clássicos (produção / MQL5 path) ──────────────────────────────────────
 
     def upsert_daily_report(self, symbol: str, date_str: str, report_text: str):
         self.conn.execute(
@@ -146,16 +216,12 @@ class DuckDBRepository:
             [symbol, date_str, report_text]
         )
 
-    # ── Inserts ──────────────────────────────────────────────────────────────────────────
-
     def insert_tape_events(self, events: List[TapeEvent]):
-        # timestamp_ns vem do raw dict quando presente (backtest Databento)
-        # é NULL quando chamado do pipeline de produção MQL5 (sem ts_ns)
         rows = [
             [
                 e.symbol,
                 e.timestamp,
-                e.raw.get("timestamp_ns"),  # None → NULL no DuckDB
+                e.raw.get("timestamp_ns"),
                 e.price,
                 e.volume,
                 e.side.value,
@@ -191,7 +257,7 @@ class DuckDBRepository:
         rows = [[
             c.symbol,
             c.timestamp,
-            c.raw_payload.get("timestamp_ns"),  # None → NULL para produção
+            c.raw_payload.get("timestamp_ns"),
             c.price,
             c.session,
             c.behavior_signature.value,
@@ -226,7 +292,7 @@ class DuckDBRepository:
             [level.symbol, level.price, level.occurrences, level.first_seen,
              level.last_seen, level.dominant_signature, level.days_active, level.reliability_score])
 
-    # ── Queries ──────────────────────────────────────────────────────────────────────────
+    # ── Queries ───────────────────────────────────────────────────────────────────────
 
     def signature_distribution(self, symbol: str) -> List:
         return self.conn.execute(
