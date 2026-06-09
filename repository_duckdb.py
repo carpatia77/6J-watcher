@@ -65,6 +65,7 @@ class DuckDBRepository:
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS tape_events (
             symbol       VARCHAR,
+            batch_id     VARCHAR,
             timestamp    TIMESTAMP,
             timestamp_ns BIGINT,
             price        DOUBLE,
@@ -75,6 +76,7 @@ class DuckDBRepository:
         self.conn.execute("""
         CREATE TABLE IF NOT EXISTS dom_levels (
             symbol       VARCHAR,
+            batch_id     VARCHAR,
             timestamp    TIMESTAMP,
             timestamp_ns BIGINT,
             price        DOUBLE,
@@ -106,7 +108,9 @@ class DuckDBRepository:
         # Guards para bancos existentes sem as novas colunas
         for tbl, col, typedef in [
             ("tape_events",        "timestamp_ns", "BIGINT"),
+            ("tape_events",        "batch_id",     "VARCHAR"),
             ("dom_levels",         "timestamp_ns", "BIGINT"),
+            ("dom_levels",         "batch_id",     "VARCHAR"),
             ("liquidity_clusters", "timestamp_ns", "BIGINT"),
             ("liquidity_clusters", "batch_id",     "VARCHAR"),
         ]:
@@ -175,9 +179,10 @@ class DuckDBRepository:
             self.conn.register("_tape_rb", tape_rb)
             self.conn.execute("""
                 INSERT INTO tape_events
-                    (symbol, timestamp, timestamp_ns, price, volume, side, raw)
+                    (symbol, batch_id, timestamp, timestamp_ns, price, volume, side, raw)
                 SELECT
                     ? AS symbol,
+                    ? AS batch_id,
                     timestamp::TIMESTAMP,
                     timestamp_ns,
                     price,
@@ -185,7 +190,7 @@ class DuckDBRepository:
                     side,
                     '{}'  AS raw
                 FROM _tape_rb
-            """, [symbol])
+            """, [symbol, batch_id])
             self.conn.unregister("_tape_rb")
 
         # dom_levels
@@ -193,9 +198,10 @@ class DuckDBRepository:
             self.conn.register("_dom_rb", dom_rb)
             self.conn.execute("""
                 INSERT INTO dom_levels
-                    (symbol, timestamp, timestamp_ns, price, level_index, bid_volume, ask_volume, raw)
+                    (symbol, batch_id, timestamp, timestamp_ns, price, level_index, bid_volume, ask_volume, raw)
                 SELECT
                     ? AS symbol,
+                    ? AS batch_id,
                     timestamp::TIMESTAMP,
                     timestamp_ns,
                     price,
@@ -204,7 +210,7 @@ class DuckDBRepository:
                     ask_volume,
                     '{}'  AS raw
                 FROM _dom_rb
-            """, [symbol])
+            """, [symbol, batch_id])
             self.conn.unregister("_dom_rb")
 
     # ── Inserts clássicos (produção / MQL5 path) ──────────────────────────────────────
@@ -231,7 +237,7 @@ class DuckDBRepository:
         ]
         if rows:
             self.conn.executemany(
-                "INSERT INTO tape_events VALUES (?,?,?,?,?,?,?)", rows
+                "INSERT INTO tape_events (symbol, timestamp, timestamp_ns, price, volume, side, raw) VALUES (?,?,?,?,?,?,?)", rows
             )
 
     def insert_dom_levels(self, levels: List[DOMLevel]):
@@ -250,7 +256,7 @@ class DuckDBRepository:
         ]
         if rows:
             self.conn.executemany(
-                "INSERT INTO dom_levels VALUES (?,?,?,?,?,?,?,?)", rows
+                "INSERT INTO dom_levels (symbol, timestamp, timestamp_ns, price, level_index, bid_volume, ask_volume, raw) VALUES (?,?,?,?,?,?,?,?)", rows
             )
 
     def insert_clusters(self, clusters: List[LiquidityCluster]):

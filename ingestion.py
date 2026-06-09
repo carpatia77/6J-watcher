@@ -95,7 +95,7 @@ class IngestionService:
                 volume,
                 side,
                 CASE WHEN side = 'buy' THEN volume ELSE -volume END AS delta,
-                (timestamp_ns / $bucket_ns) AS bucket_id
+                (timestamp_ns // $bucket_ns) AS bucket_id
             FROM tape_events
             WHERE symbol = $symbol AND batch_id = $batch_id
         ),
@@ -138,9 +138,8 @@ class IngestionService:
             FROM windowed w
             ASOF LEFT JOIN dom_levels d
                 ON  d.symbol       = $symbol
+                AND d.price        = w.last_price
                 AND d.timestamp_ns <= w.w_end_ns
-                AND d.price BETWEEN w.last_price - $tick_range
-                                AND w.last_price + $tick_range
         )
         SELECT
             w_timestamp,
@@ -162,7 +161,6 @@ class IngestionService:
             "symbol":    symbol,
             "batch_id":  batch_id,
             "bucket_ns": _BUCKET_NS,
-            "tick_range": tick_range,
         }).fetchall()
 
         if not rows:
