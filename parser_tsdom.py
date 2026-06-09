@@ -34,6 +34,7 @@ Legenda de side vindo da DLL ClusterDelta:
 Formato de timestamp aceito:
   "YYYY-MM-DD HH:MM:SS"
   "YYYY-MM-DDTHH:MM:SS"
+  "YYYY-MM-DDTHH:MM:SS.ffffff"   ← microsegundos (Databento backtest)
   epoch int/float
 """
 from datetime import datetime
@@ -53,8 +54,13 @@ def _to_datetime(value: Any) -> datetime:
     if isinstance(value, (int, float)):
         return datetime.utcfromtimestamp(value)
     text = str(value).strip()
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
-                "%Y-%m-%d %H:%M", "%Y.%m.%d %H:%M:%S"):
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S.%f",   # microsegundos — Databento backtest
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y.%m.%d %H:%M:%S",
+    ):
         try:
             return datetime.strptime(text, fmt)
         except ValueError:

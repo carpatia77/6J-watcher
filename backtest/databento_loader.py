@@ -1,7 +1,7 @@
 from __future__ import annotations
 import databento as db
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
 from typing import Iterator
 import logging
 
@@ -19,17 +19,20 @@ class DatabentoLoader:
     def download(self, start: date, end: date,
                  symbol: str = SYMBOL_6J, schema: str = "mbp-10",
                  force: bool = False) -> Path:
+        # cache usa end original para o nome do arquivo (sem +1)
         cache_file = self.cache_dir / f"{symbol}_{start}_{end}_{schema}.dbn.zst"
         if cache_file.exists() and not force:
             logger.info(f"Usando cache: {cache_file}")
             return cache_file
+        # API Databento: end é exclusivo — somar 1 dia para incluir o último dia do chunk
+        end_exclusive = end + timedelta(days=1)
         logger.info(f"Baixando {symbol} de {start} a {end} ({schema})...")
         self.client.timeseries.get_range(
             dataset="GLBX.MDP3",
             symbols=[symbol],
             schema=schema,
             start=str(start),
-            end=str(end),
+            end=str(end_exclusive),
             stype_in="continuous",
             path=str(cache_file),
         )
@@ -39,12 +42,10 @@ class DatabentoLoader:
     def stream_records(self, file_path: Path) -> Iterator:
         """
         Streaming compativel com qualquer versao do databento-python.
-        Usa context manager se disponivel (>= 0.30), senão itera direto.
         RAM: DBNStore faz lazy loading — nao carrega o arquivo inteiro.
         """
         store = db.DBNStore.from_file(str(file_path))
-        # Suporte a context manager depende da versao instalada
-        if hasattr(store, '__exit__'):
+        if hasattr(store, "__exit__"):
             with store:
                 yield from store
         else:

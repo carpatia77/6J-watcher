@@ -1,4 +1,5 @@
 from __future__ import annotations
+import databento as db
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from datetime import datetime, timezone
@@ -14,16 +15,16 @@ class BookSnapshot:
     timestamp_ns: int
     timestamp: datetime
     last_price: float
-    bid_levels: List[Dict] = field(default_factory=list)  # [{price, size, idx}]
+    bid_levels: List[Dict] = field(default_factory=list)
     ask_levels: List[Dict] = field(default_factory=list)
 
     def to_dom_rows(self) -> List[Dict]:
         """
-        Emite rows compatíveis com parse_dom_rows():
-        cada nível = uma row com bid_volume XOR ask_volume.
+        Emite rows compatíveis com parse_dom_rows().
+        Timestamp em microsegundos (%f) para preservar ordenação causal no DuckDB.
         """
         rows = []
-        ts = self.timestamp.strftime("%Y-%m-%dT%H:%M:%S")
+        ts = self.timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")
         for lv in self.bid_levels:
             rows.append({
                 "timestamp": ts,
@@ -52,25 +53,14 @@ class BookReconstructor:
         if not hasattr(record, "levels") or not record.levels:
             return None
 
-        # ✅ UTC: Databento ts_event é UNIX nanoseg UTC
         ts_ns = record.ts_event
         ts = datetime.fromtimestamp(ts_ns / 1e9, timezone.utc)
-
-        # ✅ price é int fixed-point — dividir por 1e9 para obter float
         last_price = record.price / FIXED_POINT
 
         bid_levels, ask_levels = [], []
         for i, lv in enumerate(record.levels[:self.depth]):
-            bid_levels.append({
-                "price": lv.bid_px / FIXED_POINT,
-                "size": lv.bid_sz,
-                "idx": i,
-            })
-            ask_levels.append({
-                "price": lv.ask_px / FIXED_POINT,
-                "size": lv.ask_sz,
-                "idx": i,
-            })
+            bid_levels.append({"price": lv.bid_px / FIXED_POINT, "size": lv.bid_sz, "idx": i})
+            ask_levels.append({"price": lv.ask_px / FIXED_POINT, "size": lv.ask_sz, "idx": i})
 
         return BookSnapshot(
             timestamp_ns=ts_ns, timestamp=ts,
@@ -81,13 +71,12 @@ class BookReconstructor:
     def extract_tape_event(self, record) -> Optional[Dict]:
         """
         Extrai trade de record MBP-10.
-        action == db.Action.TRADE identifica trades no Databento.
-        side: 'A' = ask aggressor (venda), 'B' = bid aggressor (compra).
+        action == 84 ('T') identifica trades no Databento.
+        side: 'B' = bid aggressor (compra), 'A' = ask aggressor (venda).
+        side 'N' (neutro) é descartado — não polui o CVD direcional.
         """
-        import databento as db
         action = getattr(record, "action", None)
-        # Comparar com o enum diretamente, ou com o char 'T' (ASCII 84)
-        if action != db.Action.TRADE and getattr(action, 'value', action) != 84:
+        if getattr(action, "value", action) != 84:
             return None
 
         ts = datetime.fromtimestamp(record.ts_event / 1e9, timezone.utc)
@@ -96,17 +85,17 @@ class BookReconstructor:
         if size == 0:
             return None
 
-        # ✅ Mapeamento correto: 'B'=bid aggressor=compra, 'A'=ask aggressor=venda
         side_char = str(getattr(record, "side", "N")).upper()
         if side_char == "B":
             side = "buy"
         elif side_char == "A":
             side = "sell"
         else:
-            side = "buy"  # fallback — parser aceita ambos
+            # 'N' = neutro (spread leg, bloco institucional sem direção) — descarta
+            return None
 
         return {
-            "timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S"),
+            "timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.%f"),
             "price": price,
             "volume": size,
             "side": side,
