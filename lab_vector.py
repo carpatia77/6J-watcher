@@ -32,7 +32,7 @@ def sandbox_vector_test():
     raw_tape_small = [
         {"timestamp_ns": 100_000_000, "price": 10.0, "volume": 5,  "side": "buy"},
         {"timestamp_ns": 200_000_000, "price": 10.5, "volume": 10, "side": "buy"},
-        {"timestamp_ns": 300_000_000, "price": 11.0, "volume": 3,  "side": "sell"},
+        {"timestamp_ns": 350_000_000, "price": 11.0, "volume": 3,  "side": "sell"},
         {"timestamp_ns": 400_000_000, "price": 10.0, "volume": 7,  "side": "sell"},
         {"timestamp_ns": 450_000_000, "price": 9.5,  "volume": 2,  "side": "buy"},
     ]
