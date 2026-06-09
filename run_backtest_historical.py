@@ -45,6 +45,77 @@ CHUNKS = [
     (date(2026, 6, 1),   date(2026, 6, 5)),
 ]
 
+TOTAL_CHUNKS = len(CHUNKS)
+
+
+def _print_chunk1_decision_panel(runner: BacktestRunner):
+    """
+    Após o primeiro chunk, imprime um painel de decisão no stdout
+    para que o operador possa decidir se aborta e implementa a
+    vetorização antes de continuar os chunks restantes.
+    """
+    prof = runner.phase_profiler
+    if prof is None:
+        return
+
+    phases = prof.phase_totals()
+    wall   = prof.total_wall()
+    ingest_pct = (phases.get("ingest", 0) / (sum(phases.values()) or 1)) * 100
+    proj_total_h = (wall / 3600) * TOTAL_CHUNKS
+    proj_remain_h = (wall / 3600) * (TOTAL_CHUNKS - 1)
+
+    lines = [
+        "",
+        "*" * 62,
+        "  PAINEL DE DECIS\u00c3O — CHUNK 1 CONCLU\u00cdDO",
+        "*" * 62,
+        f"  Chunk 1 (Oct/2025):  {wall/3600:.2f}h",
+        f"  Proje\u00e7\u00e3o total (x{TOTAL_CHUNKS}): {proj_total_h:.1f}h",
+        f"  Proje\u00e7\u00e3o restante:     {proj_remain_h:.1f}h",
+        "",
+        f"  HOT-PATH (ingest loop):  {ingest_pct:.1f}% do tempo",
+        "",
+    ]
+
+    if ingest_pct >= 60.0:
+        lines += [
+            "  *** RECOMENDACAO: PARAR E VECTORIZAR ***",
+            "",
+            "  O loop Python domina >60% do tempo.",
+            f"  Vetoriza\u00e7\u00e3o estimada: reduz {proj_total_h:.1f}h -> ",
+            f"  ~{proj_total_h * 0.25:.1f}h (estimativa conservadora -75%).",
+            "",
+            "  ACAO: Ctrl+C agora. Abra a issue de vetoriza\u00e7\u00e3o.",
+            "        O chunk 1 ja esta no DB — nao ha perda de dados.",
+        ]
+    elif ingest_pct >= 35.0:
+        lines += [
+            "  >> AVALIACAO: ganho moderado com vetoriza\u00e7\u00e3o.",
+            f"  Economia estimada: ~{proj_total_h * 0.4:.1f}h (-40%).",
+            "",
+            "  ACAO: decida com base na disponibilidade de tempo.",
+            "        Pressione Enter para continuar ou Ctrl+C para parar.",
+        ]
+    else:
+        lines += [
+            "  OK: HOT-PATH < 35%. Bottleneck e I/O ou SQL.",
+            "  Vetoriza\u00e7\u00e3o Python teria impacto baixo.",
+            "",
+            "  ACAO: continuar normalmente.",
+        ]
+
+    lines += [
+        "",
+        "  Para continuar: Enter (ou BACKTEST_INTERACTIVE=0)",
+        "*" * 62,
+        "",
+    ]
+
+    panel = "\n".join(lines)
+    # Imprime no stdout E no log
+    print(panel, flush=True)
+    logger.info(panel)
+
 
 def main():
     logger.info("=" * 60)
@@ -61,39 +132,38 @@ def main():
         db_path="./data/backtest_8months.db",
         profile_path="./data/profile_8months.json",
         batch_size_seconds=60,
-        skip_dom=False,   # DOM obrigatorio: AdaptivePatternEngine precisa de
-                          # total_bid/total_ask para detectar Iceberg e Spoofing
+        skip_dom=False,
     )
 
     import time
     for i, (start_dt, end_dt) in enumerate(CHUNKS):
         logger.info("")
         logger.info("=============================================")
-        logger.info(f"PROCESSANDO CHUNK {i+1}/{len(CHUNKS)}: {start_dt} -> {end_dt}")
+        logger.info(f"PROCESSANDO CHUNK {i+1}/{TOTAL_CHUNKS}: {start_dt} -> {end_dt}")
         logger.info("=============================================")
         t0 = time.time()
 
-        # P4: reseta timestamp de mercado para que o proximo mes
-        # nao herde estado residual do mes anterior
         runner._last_market_ts = None
 
         try:
-            runner.run(start=start_dt, end=end_dt, symbol="6J")
+            runner.run(
+                start=start_dt,
+                end=end_dt,
+                symbol="6J",
+                total_chunks=TOTAL_CHUNKS,   # para projeção correta no profiler
+            )
         except Exception:
             logger.exception(f"CRASH no chunk {start_dt} - traceback completo:")
             logger.error("Abortando backtest para preservar dados ja processados.")
             break
 
-        # P3: poda total da matriz na transicao entre meses
-        # hours=0 + reference_time=last_market_ts limpa tudo que ficou na RAM
+        # Prune da matriz na transição entre meses
         if runner._last_market_ts:
             runner.matrix.prune_stale_data(hours=0, reference_time=runner._last_market_ts)
             logger.info("[prune] Matriz zerada apos chunk %s", end_dt)
 
         elapsed = (time.time() - t0) / 3600
 
-        # P5: end_dt sem horario casta para 00:00:00 no DuckDB, cortando o
-        # ultimo dia do mes. +1 dia garante captura ate o ultimo milissegundo.
         try:
             count = runner.repo.conn.execute(
                 "SELECT COUNT(*), "
@@ -111,8 +181,23 @@ def main():
         except Exception:
             logger.exception("Erro ao gerar relatorio parcial:")
 
-        if os.getenv("BACKTEST_INTERACTIVE", "0") == "1":
-            input(f"\n[PAUSA] Chunk {i+1} concluido. Pressione Enter para continuar...")
+        # Painel de decisão após chunk 1
+        if i == 0:
+            _print_chunk1_decision_panel(runner)
+            # Pausa interativa apenas se BACKTEST_INTERACTIVE=1
+            if os.getenv("BACKTEST_INTERACTIVE", "0") == "1":
+                try:
+                    input("\n[PAUSA] Chunk 1 concluido. Pressione Enter para continuar "
+                          "(Ctrl+C para abortar e vectorizar)...")
+                except KeyboardInterrupt:
+                    logger.info("[PAUSA] Operador abortou apos chunk 1. Dados preservados.")
+                    sys.exit(0)
+        elif os.getenv("BACKTEST_INTERACTIVE", "0") == "1":
+            try:
+                input(f"\n[PAUSA] Chunk {i+1} concluido. Pressione Enter para continuar...")
+            except KeyboardInterrupt:
+                logger.info("[PAUSA] Operador abortou no chunk %d. Dados preservados.", i+1)
+                sys.exit(0)
 
     logger.info("Salvando relatorio consolidado...")
     try:
