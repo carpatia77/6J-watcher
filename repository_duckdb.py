@@ -28,21 +28,18 @@ class DuckDBRepository:
         self.conn.execute("BEGIN TRANSACTION")
 
     def commit(self):
-        """Commit da transação. Silencioso se não houver transação ativa."""
         try:
             self.conn.execute("COMMIT")
         except Exception:
             pass
 
     def rollback(self):
-        """Rollback da transação. Silencioso se não houver transação ativa."""
         try:
             self.conn.execute("ROLLBACK")
         except Exception:
             pass
 
     def close(self):
-        """Fecha conexão e libera file lock (crítico no Windows)."""
         try:
             self.conn.execute("CHECKPOINT")
             self.conn.close()
@@ -94,15 +91,17 @@ class DuckDBRepository:
             confidence         DOUBLE,
             outcome            VARCHAR,
             batch_id           VARCHAR,
-            raw_payload        TEXT
+            raw_payload        TEXT,
+            dom_min_level      INTEGER
         )""")
 
         # Guards para bancos existentes sem as novas colunas
         for tbl, col, typedef in [
-            ("tape_events",        "timestamp_ns", "BIGINT"),
-            ("dom_levels",         "timestamp_ns", "BIGINT"),
-            ("liquidity_clusters", "timestamp_ns", "BIGINT"),
-            ("liquidity_clusters", "batch_id",     "VARCHAR"),
+            ("tape_events",        "timestamp_ns",  "BIGINT"),
+            ("dom_levels",         "timestamp_ns",  "BIGINT"),
+            ("liquidity_clusters", "timestamp_ns",  "BIGINT"),
+            ("liquidity_clusters", "batch_id",      "VARCHAR"),
+            ("liquidity_clusters", "dom_min_level", "INTEGER"),  # MEDIO-08
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typedef}")
@@ -135,9 +134,12 @@ class DuckDBRepository:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts     ON liquidity_clusters(symbol, timestamp)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts     ON tape_events(symbol, timestamp)")
 
-        # Índices BIGINT (backtest) — usados pelo SignatureProfiler quando timestamp_ns IS NOT NULL
+        # Índices BIGINT (backtest)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts_ns  ON tape_events(symbol, timestamp_ns)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts_ns  ON liquidity_clusters(symbol, timestamp_ns)")
+
+        # Índice para estratificação por profundidade no SignatureProfiler
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_dom_min_level ON liquidity_clusters(dom_min_level)")
 
     def upsert_daily_report(self, symbol: str, date_str: str, report_text: str):
         self.conn.execute(
@@ -149,13 +151,11 @@ class DuckDBRepository:
     # ── Inserts ──────────────────────────────────────────────────────────────────────────
 
     def insert_tape_events(self, events: List[TapeEvent]):
-        # timestamp_ns vem do raw dict quando presente (backtest Databento)
-        # é NULL quando chamado do pipeline de produção MQL5 (sem ts_ns)
         rows = [
             [
                 e.symbol,
                 e.timestamp,
-                e.raw.get("timestamp_ns"),  # None → NULL no DuckDB
+                e.raw.get("timestamp_ns"),
                 e.price,
                 e.volume,
                 e.side.value,
@@ -191,7 +191,7 @@ class DuckDBRepository:
         rows = [[
             c.symbol,
             c.timestamp,
-            c.raw_payload.get("timestamp_ns"),  # None → NULL para produção
+            c.raw_payload.get("timestamp_ns"),
             c.price,
             c.session,
             c.behavior_signature.value,
@@ -205,10 +205,11 @@ class DuckDBRepository:
             c.outcome,
             c.batch_id,
             _j(c.raw_payload),
+            c.dom_min_level,            # coluna 17 — MEDIO-08
         ] for c in clusters]
         if rows:
             self.conn.executemany(
-                "INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
 

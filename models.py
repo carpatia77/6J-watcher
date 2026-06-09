@@ -59,8 +59,12 @@ class LiquidityCluster:
     delta_price_ticks:  int   = 0
     confidence:         float = 0.0
     outcome:            Optional[str] = None
-    batch_id:           str = field(default_factory=lambda: f"{time.time_ns()}")
+    batch_id:           str   = field(default_factory=lambda: f"{time.time_ns()}")
     raw_payload:        Dict[str, Any] = field(default_factory=dict)
+    # Profundidade mínima do nível DOM que alimentou esta janela.
+    # 9 = default (mais profundo) — fallback seguro quando DOM está offline.
+    # 0–2 = shallow (liquidez visível), 3–5 = mid, 6–9 = deep (Compound Man).
+    dom_min_level:      int   = 9
 
     @property
     def imbalance(self) -> int:
@@ -74,14 +78,11 @@ class LiquidityCluster:
             return Side.SELL
         return Side.UNKNOWN
 
-
-@dataclass
-class KeyLevel:
-    symbol:             str
-    price:              float
-    occurrences:        int = 0
-    first_seen:         Optional[datetime] = None
-    last_seen:          Optional[datetime] = None
-    dominant_signature: Optional[str] = None
-    days_active:        int = 0
-    reliability_score:  float = 0.0
+    @property
+    def depth_band(self) -> str:
+        """Faixa de profundidade DOM para estratificação no profiler e no narrator."""
+        if self.dom_min_level <= 2:
+            return "shallow"
+        if self.dom_min_level <= 5:
+            return "mid"
+        return "deep"
