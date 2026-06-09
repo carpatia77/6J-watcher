@@ -1,4 +1,3 @@
-import bisect
 import json
 from collections import Counter
 from typing import List, Dict, Optional, Union
@@ -9,6 +8,7 @@ from config import Config
 class AdaptivePatternEngine:
     """
     Classificador Não-Paramétrico baseado em Percentis Empíricos e Deslocamento de Preço.
+    Calibrado para micro-janelas de 250ms (ingestion.py _WINDOW_NS).
     """
 
     TIER_1 = ["breakout_genuine", "defense_line", "absorption_passive"]
@@ -31,16 +31,32 @@ class AdaptivePatternEngine:
 
     def _fallback_profile(self) -> dict:
         """
-        Fallback genérico usado antes do primeiro SignatureProfiler.build_profile().
-        Inclui "signatures" vazio para evitar win_rate=0 enganoso nos logs.
+        Fallback calibrado para janelas de 250ms do 6J CME MBP-10.
+        Sincronizado com SignatureProfiler._get_fallback_thresholds().
+
+        Valores anteriores (10-11 lotes vol_p90) eram de tick-único e causavam
+        colapso de classificação para ABSORPTION_PASSIVE em quase toda janela
+        antes do profile.json ser gerado pelo backtest.
         """
         return {
             "signatures": {},
             "thresholds": {
-                "ASIAN":     {"vol_percentiles": {"90": 10, "75": 5}, "imb_percentiles": {"90": 5,  "75": 2}},
-                "LONDON":    {"vol_percentiles": {"90": 11, "75": 5}, "imb_percentiles": {"90": 5,  "75": 2}},
-                "NEW_YORK":  {"vol_percentiles": {"90": 11, "75": 5}, "imb_percentiles": {"90": 5,  "75": 2}},
-                "OFF_HOURS": {"vol_percentiles": {"90": 10, "75": 5}, "imb_percentiles": {"90": 5,  "75": 2}},
+                "ASIAN": {
+                    "vol_percentiles": {"50": 20,  "75": 40,  "90": 80,  "95": 120, "99": 200},
+                    "imb_percentiles": {"50": 8,   "75": 15,  "90": 30,  "95": 50,  "99": 80},
+                },
+                "LONDON": {
+                    "vol_percentiles": {"50": 50,  "75": 100, "90": 200, "95": 300, "99": 500},
+                    "imb_percentiles": {"50": 20,  "75": 40,  "90": 80,  "95": 120, "99": 200},
+                },
+                "NEW_YORK": {
+                    "vol_percentiles": {"50": 70,  "75": 150, "90": 300, "95": 450, "99": 700},
+                    "imb_percentiles": {"50": 30,  "75": 60,  "90": 120, "95": 180, "99": 300},
+                },
+                "OFF_HOURS": {
+                    "vol_percentiles": {"50": 15,  "75": 30,  "90": 60,  "95": 90,  "99": 150},
+                    "imb_percentiles": {"50": 5,   "75": 10,  "90": 20,  "95": 35,  "99": 60},
+                },
             },
         }
 
@@ -66,7 +82,7 @@ class AdaptivePatternEngine:
           1. ABSORPTION_PASSIVE  — Vol>=90%, Imb>=90%, |delta|<=1
           2. BREAKOUT_GENUINE    — Vol>=75%, Imb>=75%, |delta|>=2
           3. ICEBERG_*           — Vol>=75%, 50<=Imb<90, |delta|<=1
-          4. SPOOFING_WALL       — Vol>=75%, Imb<50,   |delta|<=1  (agora alcançável)
+          4. SPOOFING_WALL       — Vol>=75%, Imb<50,   |delta|<=1
           5. LIQUIDITY_VACUUM    — Vol<50%,  |delta|>=2
         """
         session = self._get_session(cluster.timestamp.hour)
@@ -76,8 +92,8 @@ class AdaptivePatternEngine:
 
         vol_total = cluster.total_bid + cluster.total_ask
         imbalance = abs(cluster.total_bid - cluster.total_ask)
-        vol_p = self._get_percentile_rank(vol_total,  stats.get("vol_percentiles", {}))
-        imb_p = self._get_percentile_rank(imbalance,  stats.get("imb_percentiles", {}))
+        vol_p = self._get_percentile_rank(vol_total, stats.get("vol_percentiles", {}))
+        imb_p = self._get_percentile_rank(imbalance, stats.get("imb_percentiles", {}))
         delta = cluster.delta_price_ticks
 
         is_buy_pressure = cluster.total_bid > cluster.total_ask
@@ -95,23 +111,17 @@ class AdaptivePatternEngine:
             return BehaviorSignature.BREAKOUT_GENUINE, conf
 
         # 3. ICEBERG ACCUMULATION / DISTRIBUTION (Tier 2)
-        # imb_p >= 50 garante que Regra 4 (SPOOFING_WALL) seja alcançável
         if vol_p >= 75 and is_stationary and 50 <= imb_p < 90:
             conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.2
-            # DISTRIBUTION: pressão compradora absorvida por venda passiva
-            # ACCUMULATION: pressão vendedora absorvida por compra passiva
             if is_buy_pressure:
                 return BehaviorSignature.ICEBERG_DISTRIBUTION, conf
             else:
                 return BehaviorSignature.ICEBERG_ACCUMULATION, conf
 
         # 4. SPOOFING WALL (Tier 3)
-        # Volume alto, desequilíbrio baixo — book fake retirado sem trade real.
-        # Confianca extra quando DOM passivo contradiz a agressão da fita.
         if vol_p >= 75 and imb_p < 50 and is_stationary:
             dom_bid = cluster.raw_payload.get("dom_bid", 0)
             dom_ask = cluster.raw_payload.get("dom_ask", 0)
-            # Book contradiz fita: comprador agride mas ask passivo domina (ou vice-versa)
             dom_contradiction = (
                 (is_buy_pressure  and dom_ask > dom_bid * 2) or
                 (not is_buy_pressure and dom_bid > dom_ask * 2)
@@ -168,7 +178,6 @@ class AdaptivePatternEngine:
         Retorna a expectativa matemática do sinal baseada no backtest.
         Aceita BehaviorSignature ou str (ex: chamadas vindas de hotspots()).
         """
-        # Normaliza para string independente do tipo recebido
         sig_key = signature if isinstance(signature, str) else signature.value
         key     = f"{sig_key}_{session}"
         stats   = self.profile.get("signatures", {}).get(key, {})
@@ -179,7 +188,7 @@ class AdaptivePatternEngine:
             3
         )
         return {
-            "tier":               tier,
+            "tier":                tier,
             "historical_win_rate": stats.get("win_rate",      0.0),
             "profit_factor":       stats.get("profit_factor", 0.0),
             "sample_size":         stats.get("count",         0),

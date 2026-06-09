@@ -14,38 +14,39 @@ from typing import List, Dict, Optional
 from config import Config
 from repository_duckdb import DuckDBRepository
 from liquidity_matrix import LiquidityMatrix
-from adaptive_pattern_engine import AdaptivePatternEngine  # não mais PatternEngine
+from adaptive_pattern_engine import AdaptivePatternEngine
 from narrator import Narrator
 from ingestion import IngestionService
 
-# ── Inicialização ─────────────────────────────────────────────
-cfg = Config()
-repo = DuckDBRepository(cfg.db_path)
+# ── Inicialização ─────────────────────────────────────────────────────────────────────
+cfg    = Config()
+repo   = DuckDBRepository(cfg.db_path)
 matrix = LiquidityMatrix(cfg.symbol, cfg.tick_size)
-engine = AdaptivePatternEngine(cfg=cfg)
+# MEDIO-05: passa profile_path=cfg.profile_path para evitar fallback silencioso
+# quando o servidor e iniciado de um diretorio sem profile.json relativo
+engine  = AdaptivePatternEngine(profile_path=cfg.profile_path, cfg=cfg)
 narrator = Narrator(engine=engine, cfg=cfg)
-service = IngestionService(repo, matrix, engine, cfg, narrator=narrator) # Adicionado narrator
+service  = IngestionService(repo, matrix, engine, cfg, narrator=narrator)
 start_time = time.time()
 
-# ── FastAPI App ───────────────────────────────────────────────
+# ── FastAPI App ─────────────────────────────────────────────────────────────────────
 app = FastAPI(title="6J Watcher API", version="2.0.0")
 
-# CORS obrigatório para Streamlit (porta 8501) fazer requests ao backend (8765)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, restringir para a URL do Streamlit
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Pydantic Models ───────────────────────────────────────────
+# ── Pydantic Models ──────────────────────────────────────────────────────────────────
 class IngestPayload(BaseModel):
     symbol: str
     tape: List[Dict]
     dom: List[Dict]
     timestamp: Optional[str] = None
 
-# ── Endpoints ─────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────────
 @app.post("/ingest")
 def ingest(payload: IngestPayload):
     """Recebe payload do MQL5 Bridge e processa via IngestionService."""
@@ -67,22 +68,21 @@ def get_hotspots(
 ):
     sym = symbol or cfg.symbol
     hotspots = matrix.hotspots(min_occurrences)
-    # Enriquece com qualidade do sinal
     for h in hotspots:
-        sig = h.get("dominant_signature", "unknown")
+        sig  = h.get("dominant_signature", "unknown")
         sess = h.get("session", "NEW_YORK")
         quality = engine.get_signal_quality(sig, sess)
-        h["win_rate"] = quality["historical_win_rate"]
-        h["profit_factor"] = quality["profit_factor"]
-        h["tier"] = quality["tier"]
-        h["sample_size"] = quality["sample_size"]
+        h["win_rate"]       = quality["historical_win_rate"]
+        h["profit_factor"]  = quality["profit_factor"]
+        h["tier"]           = quality["tier"]
+        h["sample_size"]    = quality["sample_size"]
     return {"symbol": sym, "hotspots": hotspots}
 
 @app.get("/report")
 def get_report(symbol: str = Query(None)):
     sym = symbol or cfg.symbol
-    hotspots = matrix.hotspots(cfg.min_occurrences)
-    sig_dist = repo.signature_distribution(sym)
+    hotspots     = matrix.hotspots(cfg.min_occurrences)
+    sig_dist     = repo.signature_distribution(sym)
     sess_analysis = repo.session_analysis(sym)
     return narrator.daily_report(sym, hotspots, sig_dist, sess_analysis)
 
@@ -99,17 +99,18 @@ def get_powermeter(
 ):
     """Pressão compradora vs vendedora com tendência vs janela anterior."""
     sym = symbol or cfg.symbol
-    now = datetime.utcnow()
-    cutoff = now - timedelta(seconds=window_seconds)
+    now     = datetime.utcnow()
+    cutoff  = now - timedelta(seconds=window_seconds)
     prev_cutoff = cutoff - timedelta(seconds=window_seconds)
 
     buy_volume = sell_volume = 0
-    prev_buy = prev_sell = 0
+    prev_buy   = prev_sell  = 0
     trade_count = 0
 
-    # IMPORTANTE: atributo correto é tape_events (não tape_index)
+    # CRITICO-01: usa matrix.tape_index diretamente (atributo correto).
+    # O guard 'hasattr(matrix, tape_events)' era sempre False — removido.
     with matrix.lock:
-        for price, buckets in matrix.tape_events.items() if hasattr(matrix, 'tape_events') else matrix.tape_index.items():
+        for price, buckets in matrix.tape_index.items():
             for bucket, tapes in buckets.items():
                 for tape in tapes:
                     ts = tape.timestamp
@@ -126,9 +127,9 @@ def get_powermeter(
                             prev_sell += tape.volume
 
     current_delta = buy_volume - sell_volume
-    prev_delta = prev_buy - prev_sell
-    trend = current_delta - prev_delta
-    total_volume = buy_volume + sell_volume
+    prev_delta    = prev_buy - prev_sell
+    trend         = current_delta - prev_delta
+    total_volume  = buy_volume + sell_volume
 
     if total_volume == 0:
         dominant, dominant_pct = "NEUTRO", 50.0
@@ -136,31 +137,31 @@ def get_powermeter(
         buy_pct = (buy_volume / total_volume) * 100
         dominant_pct = max(buy_pct, 100 - buy_pct)
         dominant = (
-            "COMPRA" if dominant_pct >= 55 and buy_pct > 50
+            "COMPRA"     if dominant_pct >= 55 and buy_pct > 50
             else "VENDA" if dominant_pct >= 55
             else "EQUILÍBRIO"
         )
 
     if abs(trend) < total_volume * 0.1:
-        trend_label, trend_icon = "ESTÁVEL", "→"
+        trend_label, trend_icon = "ESTÁVEL",     "→"
     elif trend > 0:
-        trend_label, trend_icon = "AUMENTANDO", "↗"
+        trend_label, trend_icon = "AUMENTANDO",  "↗"
     else:
-        trend_label, trend_icon = "DIMINUINDO", "↘"
+        trend_label, trend_icon = "DIMINUINDO",  "↘"
 
     return {
-        "symbol": sym,
-        "buy_volume": buy_volume,
-        "sell_volume": sell_volume,
-        "delta": current_delta,
-        "trend": trend,
-        "trend_label": trend_label,
-        "trend_icon": trend_icon,
-        "dominant": dominant,
-        "dominant_pct": dominant_pct,
-        "trade_count": trade_count,
+        "symbol":        sym,
+        "buy_volume":    buy_volume,
+        "sell_volume":   sell_volume,
+        "delta":         current_delta,
+        "trend":         trend,
+        "trend_label":   trend_label,
+        "trend_icon":    trend_icon,
+        "dominant":      dominant,
+        "dominant_pct":  dominant_pct,
+        "trade_count":   trade_count,
         "window_seconds": window_seconds,
-        "timestamp": now.isoformat(),
+        "timestamp":     now.isoformat(),
     }
 
 @app.get("/tape/live")
@@ -169,14 +170,13 @@ def get_tape_live(
     limit: int = Query(15, ge=1, le=100)
 ):
     """Eventos recentes da fita."""
-    sym = symbol or cfg.symbol
+    sym    = symbol or cfg.symbol
     events = []
     with matrix.lock:
-        tapes = getattr(matrix, 'tape_events', getattr(matrix, 'tape_index', {}))
-        for price, buckets in tapes.items():
+        # CRITICO-01: usa matrix.tape_index diretamente
+        for price, buckets in matrix.tape_index.items():
             for bucket, t_list in buckets.items():
                 for tape in t_list:
-                    # Resolve cluster correspondente
                     signature = "—"
                     if hasattr(matrix, 'matrix'):
                         clusters = matrix.matrix.get(price, {}).get(bucket, [])
@@ -184,16 +184,14 @@ def get_tape_live(
                             if c.timestamp == tape.timestamp:
                                 signature = c.behavior_signature.value
                                 break
-                    
                     events.append({
-                        "price": tape.price,
-                        "side": tape.side.value,
-                        "volume": tape.volume,
+                        "price":       tape.price,
+                        "side":        tape.side.value,
+                        "volume":      tape.volume,
                         "delta_ticks": 0,
-                        "signature": signature,
-                        "timestamp": tape.timestamp
+                        "signature":   signature,
+                        "timestamp":   tape.timestamp,
                     })
-                    
     events.sort(key=lambda x: x["timestamp"], reverse=True)
     return {"events": events[:limit]}
 
@@ -205,12 +203,12 @@ def get_dom_snapshot(
 ):
     """DOM atual + delta vs N minutos atrás. Detecta icebergs."""
     sym = symbol or cfg.symbol
-    now = datetime.utcnow()
+    now           = datetime.utcnow()
     cutoff_current = now - timedelta(minutes=1)
-    cutoff_past = now - timedelta(minutes=delta_minutes + 1)
+    cutoff_past   = now - timedelta(minutes=delta_minutes + 1)
 
-    current_dom = {}  # price -> {bid, ask}
-    past_dom = {}
+    current_dom = {}
+    past_dom    = {}
 
     with matrix.lock:
         for price, buckets in matrix.dom_snapshots.items():
@@ -225,25 +223,23 @@ def get_dom_snapshot(
                         past_dom[d.price]["bid"] += d.bid_volume
                         past_dom[d.price]["ask"] += d.ask_volume
 
-    # Calcula deltas e ordena
     snapshot = []
     for price in set(current_dom.keys()) | set(past_dom.keys()):
         cur = current_dom.get(price, {"bid": 0, "ask": 0})
-        pas = past_dom.get(price, {"bid": 0, "ask": 0})
+        pas = past_dom.get(price,   {"bid": 0, "ask": 0})
         snapshot.append({
-            "price": price,
+            "price":      price,
             "bid_volume": cur["bid"],
             "ask_volume": cur["ask"],
-            "bid_delta": cur["bid"] - pas["bid"],
-            "ask_delta": cur["ask"] - pas["ask"],
+            "bid_delta":  cur["bid"] - pas["bid"],
+            "ask_delta":  cur["ask"] - pas["ask"],
         })
 
     snapshot.sort(key=lambda x: x["price"], reverse=True)
-
     return {
-        "symbol": sym,
+        "symbol":        sym,
         "delta_minutes": delta_minutes,
-        "levels": snapshot[:levels * 2],
+        "levels":        snapshot[:levels * 2],
     }
 
 @app.get("/health")
@@ -251,18 +247,18 @@ def health():
     """Endpoint de health check para monitoramento."""
     try:
         db_size_mb = os.path.getsize(cfg.db_path) / 1e6 if os.path.exists(cfg.db_path) else 0
-    except:
+    except Exception:
         db_size_mb = 0
     return {
-        "status": "ok",
-        "matrix_levels": len(matrix.active_levels),
-        "db_size_mb": round(db_size_mb, 2),
+        "status":         "ok",
+        "matrix_levels":  len(matrix.active_levels),
+        "db_size_mb":     round(db_size_mb, 2),
         "uptime_seconds": int(time.time() - start_time),
     }
 
-# ── Background Scheduler ─────────────────────────────────────
+# ── Background Scheduler ──────────────────────────────────────────────────────────────────
 def background_scheduler():
-    """Executa manutenção periódica da matriz (Tier 2 da auditoria)."""
+    """Executa manutenção periódica da matriz."""
     while True:
         time.sleep(1800)  # 30 minutos
         try:
@@ -270,7 +266,7 @@ def background_scheduler():
         except Exception as e:
             print(f"[scheduler] prune error: {e}")
 
-# ── Main ──────────────────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────────────
 def main():
     threading.Thread(target=background_scheduler, daemon=True).start()
     print(f"[6J Watcher] FastAPI server running on {cfg.host}:{cfg.port}")

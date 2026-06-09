@@ -9,7 +9,7 @@ from models import BehaviorSignature, DOMLevel, LiquidityCluster, TapeEvent
 
 class LiquidityMatrix:
     def __init__(self, symbol: str, tick_size: float):
-        self.symbol   = symbol
+        self.symbol    = symbol
         self.tick_size = tick_size
         self.matrix:        Dict[float, Dict[str, List[LiquidityCluster]]] = defaultdict(lambda: defaultdict(list))
         self.dom_snapshots: Dict[float, Dict[str, List[DOMLevel]]]         = defaultdict(lambda: defaultdict(list))
@@ -85,32 +85,28 @@ class LiquidityMatrix:
         clusters:    Optional[List[LiquidityCluster]] = None,
         classify:    Optional[Callable] = None,
     ):
+        """
+        Ingere eventos na matriz.
+
+        clusters DEVE ser passado pelo IngestionService (janelas de 250ms).
+        O branch de fallback tick-único foi removido: qualquer chamada sem
+        clusters= levanta RuntimeError para evitar corrupção silenciosa de
+        active_levels com granularidade errada.
+        """
         for dom in dom_levels:
             self.ingest_dom(dom)
 
         for tape in tape_events:
             self.ingest_tape(tape)
 
-        if clusters:
+        if clusters is not None:
             for cluster in clusters:
                 self.ingest_cluster(cluster)
         else:
-            for tape in tape_events:
-                cluster = LiquidityCluster(
-                    symbol    = tape.symbol,
-                    timestamp = tape.timestamp,
-                    price     = tape.price,
-                    total_bid = tape.volume if tape.side.value == "buy"  else 0,
-                    total_ask = tape.volume if tape.side.value == "sell" else 0,
-                    cumdelta  = tape.volume if tape.side.value == "buy"  else -tape.volume,
-                    raw_payload = tape.raw,
-                )
-                if classify:
-                    result = classify(cluster)
-                    cluster.behavior_signature, cluster.confidence = (
-                        result if isinstance(result, tuple) else (result, 0.0)
-                    )
-                self.ingest_cluster(cluster)
+            raise RuntimeError(
+                "build_from_events: clusters=None não permitido na arquitetura 250ms. "
+                "Passe clusters gerados pelo IngestionService._build_clusters_from_windows()."
+            )
 
     def get_price_matrix(self, price: float) -> Dict:
         p = self.normalize_price(price)
@@ -151,7 +147,7 @@ class LiquidityMatrix:
                     "total_bid":          sum(c.total_bid for c in clusters),
                     "total_ask":          sum(c.total_ask for c in clusters),
                     "first":              min(c.timestamp for c in clusters),
-                    "last":              max(c.timestamp for c in clusters),
+                    "last":               max(c.timestamp for c in clusters),
                 })
         return sorted(out, key=lambda x: x["occurrences"], reverse=True)
 
@@ -166,7 +162,6 @@ class LiquidityMatrix:
             imediatamente por um cutoff ancorado no relógio da parede (2026).
         """
         ref = reference_time if reference_time is not None else datetime.now(timezone.utc)
-        # Garante timezone-aware para comparacao segura
         if ref.tzinfo is None:
             ref = ref.replace(tzinfo=timezone.utc)
         cutoff_ts  = ref - timedelta(hours=hours)
@@ -195,11 +190,16 @@ class LiquidityMatrix:
                     del self.tape_index[p]
 
             for p in list(self.active_levels.keys()):
+                # MEDIO-04: fix list comprehension com ternario unico
+                # Anterior usava dois 'if' consecutivos (AND implicito),
+                # fazendo clusters com tzinfo set serem descartados incorretamente.
                 self.active_levels[p] = [
                     c for c in self.active_levels[p]
-                    if c.timestamp.replace(tzinfo=timezone.utc) >= cutoff_ts
-                    if c.timestamp.tzinfo is None
-                    else c.timestamp >= cutoff_ts
+                    if (
+                        c.timestamp.replace(tzinfo=timezone.utc)
+                        if c.timestamp.tzinfo is None
+                        else c.timestamp
+                    ) >= cutoff_ts
                 ]
                 if not self.active_levels[p]:
                     del self.active_levels[p]
