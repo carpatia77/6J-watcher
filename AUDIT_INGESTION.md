@@ -1,54 +1,85 @@
-# Auditoria e Refatoração: Ingestion Pipeline
+# AUDIT — ingestion.py
 
-Este documento registra cronologicamente todas as correções arquiteturais e de performance aplicadas no módulo `ingestion.py` e suas dependências diretas (`liquidity_matrix.py` e `models.py`) durante a auditoria técnica. 
+> Última revisão: **2026-06-08**  
+> Revisado por: Perplexity / carpatia77  
+> Commits desta sessão: [`d2223a1`](https://github.com/carpatia77/6J-watcher/commit/d2223a19a11d6d0857acdcc53832ad47a37b6456)
 
-O objetivo principal foi garantir consistência ACID (banco vs memória), prevenir vazamentos de memória e resolver ambiguidades de dados.
+---
 
-## Histórico de Modificações
+## Arquitetura geral
 
-### 1. Prevenção de Condições de Corrida e I/O Bloqueante
-- **Problema:** O servidor HTTP em Python processava requisições do MQL5 de forma síncrona e modificava dicionários iterados simultaneamente pela thread principal.
-- **Solução:** O servidor base em `main.py` foi migrado para `ThreadingHTTPServer`. Introduziu-se um `threading.RLock()` na `LiquidityMatrix` para serializar operações de leitura e escrita.
+`IngestionService` é o sistema nervoso central do pipeline. Unifica:
+1. Parse T&S + DOM (`parser_tsdom.py`)
+2. Micro-agregação em janelas de 250ms (`_build_clusters_from_windows`)
+3. Classificação comportamental (`AdaptivePatternEngine.classify`)
+4. Persistência no DuckDB (`DuckDBRepository`)
+5. Atualização da `LiquidityMatrix`
+6. Refinamento pós-classificação (`post_classify` a cada 10 batches)
 
-### 2. Otimização de Transações e Prevenção de OOM
-- **Problema:** Múltiplas inserções ao DuckDB não transacionais degradavam o disco, e a matriz crescia indefinidamente em memória, causando Out-Of-Memory (OOM).
-- **Solução:**
-  - `repository_duckdb.py`: Foram implementados `begin()`, `commit()` e `rollback()`.
-  - `ingestion.py`: Todo o lote (Tape, DOM, Clusters) passou a ser inserido via Bulk Transactions ACID.
-  - `liquidity_matrix.py`: Introduzido o método `prune_stale_data(hours=4)` chamado pelo loop principal, evitando vazamentos e uso desnecessário de RAM.
+---
 
-### 3. Remoção de Classificação Redundante
-- **Problema:** O `PatternEngine` classificava os mesmos clusters até 3 vezes repetidamente (na matrix, no loop, e no post-classify).
-- **Solução:** O parâmetro `classify` foi removido da chamada principal da `LiquidityMatrix`. A classificação individual primária foi centralizada unicamente no loop gerador do batch.
+## Fixes aplicados — sessão 2026-06-08
 
-### 4. Unificação da "Single Source of Truth" (Clusters)
-- **Problema:** A `LiquidityMatrix` criava seus próprios clusters isolados (sem variáveis contextuais como `session`), enquanto o `ingestion.py` criava outra lista independente para o banco de dados. A memória e o Disco armazenavam objetos de fato divergentes.
-- **Solução:** O `ingestion.py` assumiu o papel de construtor universal. Agora ele cria os clusters uma única vez, envia para o DuckDB e injeta os mesmos objetos já prontos no `build_from_events`.
+### FIX-ING-01 — `import bisect` movido para topo do módulo
+**Severidade:** Estilo / performance acumulada  
+**Problema:** `import bisect` estava dentro de `_dom_at`, gerando lookup em `sys.modules` a cada chamada. Em 8 meses de backtest (~milhões de janelas), o overhead acumula.  
+**Fix:** `import bisect` movido para escopo global no topo do arquivo.  
+**Impacto residual:** Nenhum. Módulos que chamam `ingest_batch` não precisam de alteração.
 
-### 5. Inversão da Ordem Transacional (DB antes da Memória)
-- **Problema:** Os *hotspots* eram calculados e a matriz preenchida *antes* da gravação no DuckDB. Se ocorresse uma falha no disco, a memória ficava permanentemente corrompida com dados "fantasmas" que não existiam no banco.
-- **Solução:** O bloco de transação (`begin`/`insert`/`commit`) foi movido para as primeiras linhas. Somente dados garantidos no disco (pós-commit) são repassados para a alimentação em memória e para os motores de processamento de hotspots.
+---
 
-### 6. Mecanismo de Snapshot/Restore em Memória
-- **Problema:** Se os métodos `build_from_events` ou `post_classify` falhassem pela metade, a `LiquidityMatrix` ficaria dessincronizada do BD para sempre, pois o block `except` fazia o rollback apenas do banco DuckDB.
-- **Solução:** Implementou-se um controle transacional na RAM via Truncamento. Antes de tocar nos dados, o ingestion pede `snap = self.matrix.snapshot()` (que faz cache apenas do `len()` de todas as listas no estado atual). Em caso de crash, o `except` roda um `self.matrix.restore(snap)`, que apara as listas de volta aos comprimentos originais (sem gastar memória com `deepcopy()`).
+### FIX-ING-02 — DOM index: dict → lista ordenada de tuplas
+**Severidade:** 🔴 Performance crítica para backtest de 8 meses  
+**Problema:** `_build_dom_index` retornava `dict[price_key → {ts_ns: (bid, ask)}]`. O `_dom_at` chamava `sorted(ts_map.keys())` **a cada invocação**, reconstruindo a lista ordenada O(K log K) por janela de 250ms.  
+**Fix:**
+- `_build_dom_index` agora retorna `dict[price_key → List[Tuple[ts_ns, bid, ask]]]`
+- A lista é ordenada **uma única vez** no build (`.sort()` por `ts_ns`)
+- `_dom_at` faz busca binária manual O(log K) diretamente sobre a lista pré-ordenada
+- Sem `import bisect` necessário no método (já no topo)
 
-### 7. Post-Classify Seguro Contra Sobrescrita
-- **Problema:** A rotina de re-classificação de hotspots iterava cegamente sobre os `active_levels`, sobrescrevendo indiscriminadamente as assinaturas de clusters criados horas atrás e que já estavam confirmados no DuckDB.
-- **Solução:** Adicionado filtro para assegurar que apenas os clusters criados milissegundos antes, estritamente no batch atual, fossem afetados pelo refinamento do `post_classify`.
+**Complexidade:**
+```
+Antes:  O(K log K) por chamada _dom_at  (K = snapshots DOM por preço)
+Agora:  O(log K)  por chamada _dom_at
+Build:  O(D log D) uma vez por batch  (D = total dom_rows)
+```
 
-### 8. Robustez no Tracking de Identidade (Injeção de `batch_id`)
-- **Problema:** Utilizar o ID de memória do Python (`id()`) para fazer o filtro do item #7 era uma quebra de modelo perigosa: não sobreviveria a cópias profundas se um desenvolvedor alterasse a matrix futuramente.
-- **Solução:** A classe `LiquidityCluster` (`models.py`) recebeu o campo `batch_id: str`. Um timestamp exato do relógio via `time.time_ns()` é gerado *fora do laço* de leitura no `ingestion.py` e carimbado em todo o lote de clusters simultaneamente.
+**Impacto residual nos módulos dependentes:**
+- `backtest_runner.py` — chama `ingest_batch`, sem mudança de interface
+- `main.py` (produção) — idem, sem mudança de interface
+- `LiquidityMatrix` — não consome `dom_index` diretamente, sem impacto
 
-### 9. Validação Lógica de Payloads
-- **Problema:** Se o JSON oriundo do MQL5 estivesse avariado e os dicionários fossem mal parseados, o parser retornava listas vazias sem estourar exceções. O pipeline rodava silenciosamente, mascarando dados truncados ou conexões de rede instáveis.
-- **Solução:** Foram fixados warnings de logs explícitos. Se `tape_rows` e `dom_rows` não forem nulos mas os parsers devolverem 0 registros, logs como `"payload pode estar malformado"` ou `"DOM sensor pode estar offline"` são gerados para ajudar em trouble-shooting no servidor.
+---
 
-### 10. Transferência do `delta_price_ticks` para o Objeto e Persistência O(1)
-- **Problema:** O classificador O(1) exigia o `delta_price_ticks`, e o cálculo do stateful cursor em memória funcionava bem, mas esse valor vital era descartado da persistência. Isso forçava o DuckDB a tentar recalcular o delta depois usando a função analítica `LAG()`, o que era semântica e tecnicamente falho (gerava deltas incorretos baseados no registro e não no preço do bucket).
-- **Solução:** O valor exato `dp`, medido via stateful cursor em memória na construção do `LiquidityCluster`, foi roteado diretamente para o atributo interno `c.delta_price_ticks` do modelo, tornando-o disponível para persistência direta no DuckDB sem cálculos complexos *offline*.
+### FIX-ING-03 — `top_n` como parâmetro configurável
+**Severidade:** 🟡 Melhoria de cobertura de sinal  
+**Problema:** `_build_dom_index` tinha `top_n=5` hardcoded. Para o 6J (CME micro-FX), o Compound Man frequentemente esconde Icebergs nos níveis 6–10 do Book.  
+**Fix:** `top_n` exposto como parâmetro em `_build_dom_index` e em `ingest_batch` (default=5).  
+**Uso no backtest:** `ingest_batch(..., top_n=10)` — ver `backtest_runner.py`  
+**Uso em produção:** `ingest_batch(...)` — mantém `top_n=5` por default (sem regressão)  
+**Custo adicional:** Nenhum — O(log K) do bisect lida com K maior sem degradação.
 
+---
 
-## 🛠️ Resolvido na Pós-Auditoria (Fase Final Platinum)
-Todas as vulnerabilidades P0, P1 e P2 (Blockers, Alta e Média Prioridade) identificadas nesta auditoria foram **100% corrigidas** no commit 4663f35. O módulo atingiu a certificação estrutural exigida para produção.
+## Integridade validada (sem fix necessário)
+
+| Ponto | Status |
+|---|---|
+| `_last_market_ts = None` reset entre chunks | ✅ Correto — `prune_stale_data` recebe tempo de mercado real |
+| `executemany` para UPDATE em lote de clusters upgraded | ✅ Correto — evita catastrophic UPDATE individual |
+| `(0, 0)` de `_dom_at` quando preço não encontrado | ✅ Seguro — usado apenas como metadado em `raw_payload`, não como input classificador |
+| Sequência parse → index → cluster → persist → refine | ✅ Blindada — `rollback()` no `except` de cada etapa |
+| Fallback produção MQL5 sem `timestamp_ns` | ✅ Cada TapeEvent gera sua própria janela sem regressão |
+
+---
+
+## Observação de operações
+
+> `profile.json` gerado antes do commit `d2223a1` (janelas tick-único) **deve ser deletado**  
+> antes do primeiro run do backtest. O perfil antigo tem percentis uma ordem de grandeza  
+> abaixo da distribuição de janelas de 250ms e causaria classificação degenerada.
+
+```powershell
+del data\backtest_profile.json
+python run_backtest_historical.py
+```
