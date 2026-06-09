@@ -122,8 +122,9 @@ class BacktestRunner:
             logger.warning("tqdm nao instalado. Execute: pip install tqdm")
 
         for tape_rows, dom_rows in self.adapter.stream_batches(file_path, skip_dom=self.skip_dom):
-            # dom_rows agora entra no pipeline quando skip_dom=False
-            clusters = self.service.ingest_batch(tape_rows, dom_rows, symbol)
+            # top_n=10: captura atividade do Compound Man nos níveis 6-10 do Book
+            # (Icebergs escondidos abaixo do Top-5 visível)
+            clusters = self.service.ingest_batch(tape_rows, dom_rows, symbol, top_n=10)
 
             self.metrics["total_batches"]     += 1
             self.metrics["total_tape_events"] += len(tape_rows)
@@ -150,7 +151,6 @@ class BacktestRunner:
                     self.metrics["total_clusters"])
 
             # CHECKPOINT + prune a cada 500 batches
-            # prune usa tempo de mercado do batch — evita amnesia total no backtest
             if self.metrics["total_batches"] % 500 == 0:
                 self.repo.conn.execute("CHECKPOINT")
                 if self._last_market_ts:
