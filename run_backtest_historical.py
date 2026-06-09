@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 import sys
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
@@ -30,16 +30,21 @@ logger = logging.getLogger(__name__)
 
 API_KEY = os.getenv("DATABENTO_API_KEY", "")
 
+# Cada chunk = 1 arquivo .dbn.zst independente no cache.
+# Meses separados permitem reprocessamento granular sem re-download.
+# Jun/2026 isolado pois pode ter dados incompletos (lag CME).
 CHUNKS = [
-    (date(2025, 10, 5), date(2025, 10, 31)),
-    (date(2025, 11, 1), date(2025, 11, 30)),
-    (date(2025, 12, 1), date(2025, 12, 31)),
-    (date(2026, 1, 1),  date(2026, 1, 31)),
-    (date(2026, 2, 1),  date(2026, 2, 28)),
-    (date(2026, 3, 1),  date(2026, 3, 31)),
-    (date(2026, 4, 1),  date(2026, 4, 30)),
-    (date(2026, 5, 1),  date(2026, 6, 5)),
+    (date(2025, 10, 5),  date(2025, 10, 31)),
+    (date(2025, 11, 1),  date(2025, 11, 30)),
+    (date(2025, 12, 1),  date(2025, 12, 31)),
+    (date(2026, 1, 1),   date(2026, 1, 31)),
+    (date(2026, 2, 1),   date(2026, 2, 28)),
+    (date(2026, 3, 1),   date(2026, 3, 31)),
+    (date(2026, 4, 1),   date(2026, 4, 30)),
+    (date(2026, 5, 1),   date(2026, 5, 31)),
+    (date(2026, 6, 1),   date(2026, 6, 5)),
 ]
+
 
 def main():
     logger.info("=" * 60)
@@ -48,7 +53,7 @@ def main():
     logger.info("=" * 60)
 
     if not API_KEY:
-        logger.error("DATABENTO_API_KEY nao definida — abortando.")
+        logger.error("DATABENTO_API_KEY nao definida - abortando.")
         sys.exit(1)
 
     runner = BacktestRunner(
@@ -56,45 +61,58 @@ def main():
         db_path="./data/backtest_8months.db",
         profile_path="./data/profile_8months.json",
         batch_size_seconds=60,
-        skip_dom=True,
+        skip_dom=False,   # DOM obrigatorio: AdaptivePatternEngine precisa de
+                          # total_bid/total_ask para detectar Iceberg e Spoofing
     )
 
     import time
     for i, (start_dt, end_dt) in enumerate(CHUNKS):
         logger.info("")
         logger.info("=============================================")
-        logger.info(f"PROCESSANDO MES {i+1}/8: {start_dt} -> {end_dt}")
+        logger.info(f"PROCESSANDO CHUNK {i+1}/{len(CHUNKS)}: {start_dt} -> {end_dt}")
         logger.info("=============================================")
         t0 = time.time()
+
+        # P4: reseta timestamp de mercado para que o proximo mes
+        # nao herde estado residual do mes anterior
+        runner._last_market_ts = None
+
         try:
             runner.run(start=start_dt, end=end_dt, symbol="6J")
         except Exception:
-            logger.exception(f"CRASH no mes {start_dt} — traceback completo:")
+            logger.exception(f"CRASH no chunk {start_dt} - traceback completo:")
             logger.error("Abortando backtest para preservar dados ja processados.")
             break
 
-        # CHECKPOINT removido daqui pois o runner já o faz periodicamente e no finally
+        # P3: poda total da matriz na transicao entre meses
+        # hours=0 + reference_time=last_market_ts limpa tudo que ficou na RAM
+        if runner._last_market_ts:
+            runner.matrix.prune_stale_data(hours=0, reference_time=runner._last_market_ts)
+            logger.info("[prune] Matriz zerada apos chunk %s", end_dt)
 
         elapsed = (time.time() - t0) / 3600
+
+        # P5: end_dt sem horario casta para 00:00:00 no DuckDB, cortando o
+        # ultimo dia do mes. +1 dia garante captura ate o ultimo milissegundo.
         try:
             count = runner.repo.conn.execute(
                 "SELECT COUNT(*), "
                 "SUM(CASE WHEN behavior_signature != 'unknown' THEN 1 ELSE 0 END) "
                 "FROM liquidity_clusters WHERE symbol='6J' "
                 "AND timestamp >= ? AND timestamp < ?",
-                [str(start_dt), str(end_dt)]
+                [str(start_dt), str(end_dt + timedelta(days=1))]
             ).fetchone()
             total, classified = count[0] or 0, count[1] or 0
             pct = (classified / total * 100) if total > 0 else 0.0
             logger.info(
-                f"  Mes {start_dt.strftime('%b/%Y')}: {total:,} clusters, "
+                f"  Chunk {start_dt.strftime('%b/%Y')}: {total:,} clusters, "
                 f"{pct:.1f}% classificados, {elapsed:.2f}h"
             )
         except Exception:
             logger.exception("Erro ao gerar relatorio parcial:")
 
         if os.getenv("BACKTEST_INTERACTIVE", "0") == "1":
-            input(f"\n[PAUSA] Mes {i+1} concluido. Pressione Enter para continuar...")
+            input(f"\n[PAUSA] Chunk {i+1} concluido. Pressione Enter para continuar...")
 
     logger.info("Salvando relatorio consolidado...")
     try:
@@ -109,6 +127,7 @@ def main():
         logger.info("Conexao DuckDB encerrada.")
 
     logger.info("Orquestrador concluido. Veja ./data/backtest_run.log para historico completo.")
+
 
 if __name__ == "__main__":
     main()
