@@ -6,12 +6,13 @@ Orquestra o pipeline completo de ingestão:
   1. Parse T&S e DOM
   2. Persiste no DuckDB
   3. Alimenta a LiquidityMatrix
-  4. Classifica assinatura comportamental
+  4. Classifica assinatura comportamental (micro-janelas de 250ms)
   5. Devolve clusters gerados
 """
 import logging
 import time
-from typing import Dict, List
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 from config import Config
 from models import LiquidityCluster
 from parser_tsdom import parse_tape_rows, parse_dom_rows
@@ -19,13 +20,17 @@ from adaptive_pattern_engine import AdaptivePatternEngine
 from liquidity_matrix import LiquidityMatrix
 from repository_duckdb import DuckDBRepository
 
+# Janela de micro-agregação em nanossegundos (250ms)
+_WINDOW_NS = 250_000_000
+
 
 class IngestionService:
-    def __init__(self, repo: DuckDBRepository, matrix: LiquidityMatrix, engine: AdaptivePatternEngine, cfg: Config, narrator=None):
-        self.repo   = repo
-        self.matrix = matrix
-        self.engine = engine
-        self.cfg    = cfg
+    def __init__(self, repo: DuckDBRepository, matrix: LiquidityMatrix,
+                 engine: AdaptivePatternEngine, cfg: Config, narrator=None):
+        self.repo    = repo
+        self.matrix  = matrix
+        self.engine  = engine
+        self.cfg     = cfg
         self.narrator = narrator
 
         row = repo.conn.execute(
@@ -34,114 +39,236 @@ class IngestionService:
         ).fetchone()
         self.last_closed_price = row[0] if row else None
         if self.last_closed_price is not None:
-            logging.info(f"[IngestionService] Cold start: last_closed_price={self.last_closed_price} (do DuckDB)")
+            logging.info(
+                "[IngestionService] Cold start: last_closed_price=%s (do DuckDB)",
+                self.last_closed_price
+            )
 
-    def ingest_batch(self, tape_rows: List[Dict], dom_rows: List[Dict], symbol: str) -> List[LiquidityCluster]:
-        tape   = parse_tape_rows(tape_rows, symbol)
-        dom    = parse_dom_rows(dom_rows, symbol)
+    # ── DOM index ───────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_dom_index(
+        dom_rows: List[Dict],
+        tick_size: float,
+        top_n: int = 5,
+    ) -> Dict[int, Dict[int, Tuple[int, int]]]:
+        """
+        Pré-indexa dom_rows por (price_key, timestamp_ns) uma única vez por batch.
+
+        Estrutura retornada:
+            index[price_key][timestamp_ns] = (bid_sum, ask_sum)
+
+        price_key = round(price / tick_size)  — inteiro, evita drift de float.
+        Apenas os top_n níveis (level_index < top_n) são considerados.
+
+        Complexidade: O(D) onde D = len(dom_rows).
+        Lookup subsequente: O(log K) com bisect sobre K timestamps únicos por preço.
+        Na prática K é pequîano (~snapshots por minuto), lookup é efetivamente O(1).
+        """
+        if not dom_rows or tick_size <= 0:
+            return {}
+
+        # Acumula bid/ask por (price_key, timestamp_ns)
+        acc: Dict[Tuple[int, int], Tuple[int, int]] = {}
+        for row in dom_rows:
+            ts_ns = row.get("timestamp_ns")
+            if ts_ns is None:
+                continue
+            idx = row.get("level_index", top_n)
+            if idx >= top_n:
+                continue
+            pk = round(row.get("price", 0.0) / tick_size)
+            key = (pk, ts_ns)
+            b, a = acc.get(key, (0, 0))
+            acc[key] = (b + row.get("bid_volume", 0),
+                        a + row.get("ask_volume", 0))
+
+        # Reorganiza: index[price_key] = sorted list of (ts_ns, bid, ask)
+        grouped: Dict[int, List[Tuple[int, int, int]]] = defaultdict(list)
+        for (pk, ts_ns), (b, a) in acc.items():
+            grouped[pk].append((ts_ns, b, a))
+
+        # Ordena por ts_ns para permitir bisect
+        index: Dict[int, Dict[int, Tuple[int, int]]] = {}
+        for pk, entries in grouped.items():
+            entries.sort()  # sort by ts_ns (first element)
+            index[pk] = {ts: (b, a) for ts, b, a in entries}
+
+        return index
+
+    def _dom_at(
+        self,
+        dom_index: Dict[int, Dict[int, Tuple[int, int]]],
+        price: float,
+        end_ns: int,
+    ) -> Tuple[int, int]:
+        """
+        Retorna (dom_bid, dom_ask) do snapshot DOM mais recente com
+        timestamp_ns <= end_ns para o price_key dado.
+
+        O(log K) com K = número de snapshots para aquele preço (tipicamente < 100).
+        """
+        pk = round(price / self.cfg.tick_size)
+        ts_map = dom_index.get(pk)
+        if not ts_map:
+            return (0, 0)
+
+        import bisect
+        keys = sorted(ts_map.keys())          # lista ordenada de timestamps
+        pos  = bisect.bisect_right(keys, end_ns) - 1
+        if pos < 0:
+            return (0, 0)
+        return ts_map[keys[pos]]
+
+    # ── Micro-agregação em janelas de 250ms ───────────────────────────────────────
+
+    def _build_clusters_from_windows(
+        self,
+        tape: list,
+        dom_index: Dict,
+        symbol: str,
+        batch_id: str,
+    ) -> List[LiquidityCluster]:
+        """
+        Agrega TapeEvents em janelas de 250ms.
+
+        Dentro de cada janela:
+          - total_bid / total_ask acumulam ambos os lados  →  imb != vol
+          - delta_price_ticks = (last_price - first_price) / tick_size
+          - cumdelta / deltamin / deltamax via CVD incremental
+          - dom_bid / dom_ask injetados via _dom_at() no fechamento
+
+        Fallback para produção MQL5 sem timestamp_ns:
+          Cada TapeEvent gera sua própria janela (comportamento conservador,
+          sem regressão no pipeline de produção).
+        """
+        if not tape:
+            return []
+
+        clusters: List[LiquidityCluster] = []
+
+        # Estado da janela corrente
+        w_start_ns:    Optional[int]      = None
+        w_first_price: Optional[float]    = None
+        w_last_price:  Optional[float]    = None
+        w_ts                              = None
+        total_bid = total_ask = 0
+        cumdelta = deltamin = deltamax = 0
+
+        def _flush(end_ns: int) -> None:
+            nonlocal total_bid, total_ask, cumdelta, deltamin, deltamax
+            nonlocal w_start_ns, w_first_price, w_last_price, w_ts
+
+            if w_ts is None:
+                return
+
+            dp = round((w_last_price - w_first_price) / self.cfg.tick_size)
+            dom_bid, dom_ask = self._dom_at(dom_index, w_last_price, end_ns)
+
+            c = LiquidityCluster(
+                symbol    = symbol,
+                timestamp = w_ts,
+                price     = w_last_price,
+                session   = self.cfg.session_for(w_ts.hour),
+                total_bid = total_bid,
+                total_ask = total_ask,
+                cumdelta  = cumdelta,
+                deltamin  = deltamin,
+                deltamax  = deltamax,
+                delta_price_ticks = dp,
+                batch_id  = batch_id,
+                raw_payload = {
+                    "window_ns":    w_start_ns,
+                    "timestamp_ns": w_start_ns,
+                    "dom_bid":      dom_bid,
+                    "dom_ask":      dom_ask,
+                },
+            )
+            sig, conf = self.engine.classify(c)
+            c.behavior_signature = sig
+            c.confidence = conf
+            clusters.append(c)
+            self.last_closed_price = w_last_price
+
+            # reset
+            total_bid = total_ask = cumdelta = deltamin = deltamax = 0
+            w_start_ns = w_first_price = w_last_price = w_ts = None
+
+        for e in tape:
+            e_ns = e.raw.get("timestamp_ns")
+            vol  = e.volume
+            side = e.side.value
+
+            if e_ns is not None:
+                # ─ caminho backtest: agregação temporal real ─
+                if w_start_ns is None:
+                    w_start_ns    = e_ns
+                    w_first_price = e.price
+                    w_ts          = e.timestamp
+
+                elif e_ns - w_start_ns >= _WINDOW_NS:
+                    _flush(e_ns - 1)
+                    w_start_ns    = e_ns
+                    w_first_price = e.price
+                    w_ts          = e.timestamp
+            else:
+                # ─ caminho produção sem ts_ns: flush anterior, janela isolada ─
+                if w_ts is not None:
+                    _flush(0)
+                w_start_ns    = 0
+                w_first_price = e.price
+                w_ts          = e.timestamp
+
+            if side == "buy":
+                total_bid += vol
+                cumdelta  += vol
+            else:
+                total_ask += vol
+                cumdelta  -= vol
+            deltamin      = min(deltamin, cumdelta)
+            deltamax      = max(deltamax, cumdelta)
+            w_last_price  = e.price
+
+        # Flush da última janela incompleta
+        if w_ts is not None:
+            last_ns = tape[-1].raw.get("timestamp_ns") or 0
+            _flush(last_ns)
+
+        return clusters
+
+    # ── ingest_batch ─────────────────────────────────────────────────────────────────────
+
+    def ingest_batch(
+        self,
+        tape_rows: List[Dict],
+        dom_rows:  List[Dict],
+        symbol:    str,
+    ) -> List[LiquidityCluster]:
+        tape = parse_tape_rows(tape_rows, symbol)
+        dom  = parse_dom_rows(dom_rows, symbol)
 
         if tape_rows and not tape:
             logging.warning(
-                "[ingest_batch] %d tape_rows recebidas mas nenhuma parseada com sucesso "
-                "(symbol=%s) — payload pode estar malformado.",
+                "[ingest_batch] %d tape_rows sem parse (symbol=%s) — payload malformado.",
                 len(tape_rows), symbol,
             )
             return []
         if not tape:
             return []
-
         if dom_rows and not dom:
             logging.warning(
-                "[ingest_batch] %d dom_rows recebidas mas nenhuma parseada com sucesso "
-                "(symbol=%s) — DOM sensor pode estar offline.",
+                "[ingest_batch] %d dom_rows sem parse (symbol=%s) — DOM offline.",
                 len(dom_rows), symbol,
             )
 
-        clusters: List[LiquidityCluster] = []
         batch_id = str(time.time_ns())
 
-        if tape:
-            current_cluster_data = None
+        # Pré-indexa DOM uma vez por batch: O(D) — evita O(D * W) no loop de janelas
+        dom_index = self._build_dom_index(dom_rows, self.cfg.tick_size, top_n=5)
 
-            for e in tape:
-                side  = e.side.value
-                price = e.price
-                vol   = e.volume
-                cumdelta = vol if side == "buy" else -vol
-                # timestamp_ns vem do raw dict quando disponivel (backtest Databento)
-                e_ts_ns = e.raw.get("timestamp_ns")
+        clusters = self._build_clusters_from_windows(tape, dom_index, symbol, batch_id)
 
-                if current_cluster_data is None or current_cluster_data["price"] != price or current_cluster_data["side"] != side:
-                    if current_cluster_data is not None:
-                        dp = round((current_cluster_data["price"] - self.last_closed_price) / self.cfg.tick_size) if self.last_closed_price is not None else 0
-                        c = LiquidityCluster(
-                            symbol=symbol,
-                            timestamp=current_cluster_data["timestamp"],
-                            price=current_cluster_data["price"],
-                            session=self.cfg.session_for(current_cluster_data["timestamp"].hour),
-                            total_bid=current_cluster_data["total_bid"],
-                            total_ask=current_cluster_data["total_ask"],
-                            cumdelta=current_cluster_data["cumdelta"],
-                            deltamin=current_cluster_data["deltamin"],
-                            deltamax=current_cluster_data["deltamax"],
-                            delta_price_ticks=dp,
-                            batch_id=batch_id,
-                            raw_payload={
-                                "events_aggregated": current_cluster_data["count"],
-                                "timestamp_ns":      current_cluster_data["timestamp_ns"],
-                            },
-                        )
-                        sig, conf = self.engine.classify(c)
-                        c.behavior_signature = sig
-                        c.confidence = conf
-                        clusters.append(c)
-                        self.last_closed_price = current_cluster_data["price"]
-
-                    current_cluster_data = {
-                        "price":        price,
-                        "side":         side,
-                        "timestamp":    e.timestamp,
-                        "timestamp_ns": e_ts_ns,       # None para produção MQL5
-                        "total_bid":    vol if side == "buy" else 0,
-                        "total_ask":    vol if side == "sell" else 0,
-                        "cumdelta":     cumdelta,
-                        "deltamin":     min(0, cumdelta),
-                        "deltamax":     max(0, cumdelta),
-                        "count":        1,
-                    }
-                else:
-                    current_cluster_data["total_bid"] += (vol if side == "buy" else 0)
-                    current_cluster_data["total_ask"] += (vol if side == "sell" else 0)
-                    current_cluster_data["cumdelta"]  += cumdelta
-                    current_cluster_data["deltamin"]   = min(current_cluster_data["deltamin"], current_cluster_data["cumdelta"])
-                    current_cluster_data["deltamax"]   = max(current_cluster_data["deltamax"], current_cluster_data["cumdelta"])
-                    current_cluster_data["count"]     += 1
-
-            if current_cluster_data is not None:
-                dp = round((current_cluster_data["price"] - self.last_closed_price) / self.cfg.tick_size) if self.last_closed_price is not None else 0
-                c = LiquidityCluster(
-                    symbol=symbol,
-                    timestamp=current_cluster_data["timestamp"],
-                    price=current_cluster_data["price"],
-                    session=self.cfg.session_for(current_cluster_data["timestamp"].hour),
-                    total_bid=current_cluster_data["total_bid"],
-                    total_ask=current_cluster_data["total_ask"],
-                    cumdelta=current_cluster_data["cumdelta"],
-                    deltamin=current_cluster_data["deltamin"],
-                    deltamax=current_cluster_data["deltamax"],
-                    delta_price_ticks=dp,
-                    batch_id=batch_id,
-                    raw_payload={
-                        "events_aggregated": current_cluster_data["count"],
-                        "timestamp_ns":      current_cluster_data["timestamp_ns"],
-                    },
-                )
-                sig, conf = self.engine.classify(c)
-                c.behavior_signature = sig
-                c.confidence = conf
-                clusters.append(c)
-                self.last_closed_price = current_cluster_data["price"]
-
+        # Persistência
         self.repo.begin()
         try:
             self.repo.insert_tape_events(tape)
@@ -152,12 +279,14 @@ class IngestionService:
             self.repo.rollback()
             raise
 
+        # Alimenta matrix e post-classifica
         snap = self.matrix.snapshot()
         try:
             self.matrix.build_from_events(tape, dom, clusters=clusters)
 
-            original_signatures: dict[int, str] = {id(c): c.behavior_signature.value for c in clusters}
-
+            original_signatures: dict[int, str] = {
+                id(c): c.behavior_signature.value for c in clusters
+            }
             current_batch_id = clusters[0].batch_id if clusters else None
 
             self._batch_counter = getattr(self, "_batch_counter", 0) + 1
@@ -182,7 +311,11 @@ class IngestionService:
                         """UPDATE liquidity_clusters
                            SET behavior_signature = ?
                            WHERE symbol = ? AND timestamp = ? AND price = ? AND batch_id = ?""",
-                        [(c.behavior_signature.value, c.symbol, c.timestamp, c.price, c.batch_id) for c in upgraded]
+                        [
+                            (c.behavior_signature.value, c.symbol,
+                             c.timestamp, c.price, c.batch_id)
+                            for c in upgraded
+                        ],
                     )
                     self.repo.commit()
                 except Exception:
