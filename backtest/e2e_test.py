@@ -20,6 +20,7 @@ import tempfile
 from datetime import datetime, date
 from pathlib import Path
 from typing import Dict
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -79,6 +80,37 @@ def _make_trade_record(
         for i in range(num_levels)
     ]
     return r
+
+
+def _make_synthetic_batch(
+    n_tape: int = 10,
+    n_dom: int = 10,
+    price: float = 0.006760,
+    minute_offset: int = 0,
+) -> tuple:
+    """Gera um par (tape_rows, dom_rows) sintético pronto para ingest_batch()."""
+    tape = [
+        {
+            "timestamp": datetime(2026, 6, 4, 14, minute_offset, i % 60).strftime("%Y-%m-%dT%H:%M:%S"),
+            "price":  price + i * 0.00001,
+            "volume": 20 + i,
+            "side":   "buy" if i % 2 == 0 else "sell",
+            "timestamp_ns": 1_717_502_400_000_000_000 + minute_offset * 60_000_000_000 + i * 1_000_000_000,
+        }
+        for i in range(n_tape)
+    ]
+    dom = [
+        {
+            "timestamp": datetime(2026, 6, 4, 14, minute_offset, 0).strftime("%Y-%m-%dT%H:%M:%S"),
+            "price":        price,
+            "level_index":  j,
+            "bid_volume":   100,
+            "ask_volume":   100,
+            "timestamp_ns": 1_717_502_400_000_000_000 + minute_offset * 60_000_000_000,
+        }
+        for j in range(n_dom)
+    ]
+    return tape, dom
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +359,12 @@ class TestE2EPipeline:
         )
 
     def test_data_persisted_to_duckdb(self, tmp_pipeline):
-        """Após ingest_batch(), tape_events e clusters devem estar no DuckDB."""
+        """
+        Após ingest_batch(), tape_events, dom_levels e clusters devem estar no DuckDB.
+
+        GAP 2 (fechado): dom_levels não estava sendo verificado — qualquer regressão
+        em repo.insert_dom_levels() passava silenciosamente por este teste.
+        """
         service, repo, _, _ = tmp_pipeline
         tape = self._make_tape_rows(5)
         dom  = self._make_dom_rows(5)
@@ -339,9 +376,14 @@ class TestE2EPipeline:
         cluster_count = repo.conn.execute(
             "SELECT COUNT(*) FROM liquidity_clusters WHERE symbol = '6J'"
         ).fetchone()[0]
+        # GAP 2: verifica que dom_levels também foram persistidos
+        dom_count = repo.conn.execute(
+            "SELECT COUNT(*) FROM dom_levels WHERE symbol = '6J'"
+        ).fetchone()[0]
 
-        assert tape_count == 5
-        assert cluster_count == 5
+        assert tape_count    == 5, f"tape_events: esperado 5, got {tape_count}"
+        assert cluster_count == 5, f"liquidity_clusters: esperado 5, got {cluster_count}"
+        assert dom_count     == 5, f"dom_levels: esperado 5, got {dom_count}"  # GAP 2
 
     def test_signature_distribution_populated(self, tmp_pipeline):
         """repo.signature_distribution() retorna dados após ingest."""
@@ -402,6 +444,75 @@ class TestBacktestRunner:
 
         clusters = runner.service.ingest_batch(tape, dom, "6J")
         assert len(clusters) == 20
+
+    def test_runner_stream_loop_mock(self, tmp_path):
+        """
+        GAP 1 (fechado): o loop stream do BacktestRunner.run() nunca foi testado
+        sem um arquivo .dbn.zst real. Qualquer regressão no loop
+        (stream → ingest → metrics) era invisível para o CI.
+
+        Este teste mocka adapter.stream_batches() com um generator de 3 batches
+        sintéticos e um arquivo dummy, exercendo o loop completo de run()
+        incluindo acumulação de métricas, phase_profiler e skip_profiler=True.
+
+        Garante:
+          - total_batches == 3
+          - total_tape_events == soma dos tapes dos 3 batches
+          - total_dom_levels  == soma dos dom dos 3 batches
+          - total_clusters    > 0  (classificação real, não mock)
+          - phase_profiler    não é None após o run
+          - nenhuma exceção é levantada
+        """
+        # Batches sintéticos: 3 batches com volumes crescentes
+        batch_specs = [
+            (8,  10, 0.006760, 0),  # (n_tape, n_dom, price, minute_offset)
+            (12, 10, 0.006765, 1),
+            (6,  10, 0.006755, 2),
+        ]
+        synthetic_batches = [
+            _make_synthetic_batch(n_tape, n_dom, price, mo)
+            for n_tape, n_dom, price, mo in batch_specs
+        ]
+        expected_tape   = sum(s[0] for s in batch_specs)   # 26
+        expected_dom    = sum(s[1] for s in batch_specs)   # 30
+
+        # Arquivo dummy — runner._resolve_file() é bypassed via mock
+        dummy_file = tmp_path / "dummy.dbn.zst"
+        dummy_file.write_bytes(b"\x00" * 64)  # conteúdo irrelevante
+
+        runner = BacktestRunner(
+            api_key="fake_key",
+            db_path=str(tmp_path / "gap1.db"),
+            profile_path=str(tmp_path / "gap1_profile.json"),
+            skip_profiler=True,
+        )
+
+        def _fake_stream(file_path, skip_dom=False):
+            """Generator que emite os 3 batches sintéticos e para."""
+            yield from synthetic_batches
+
+        with patch.object(runner.adapter, "stream_batches", side_effect=_fake_stream), \
+             patch.object(runner, "_resolve_file", return_value=dummy_file):
+            metrics = runner.run(
+                start=date(2026, 6, 4),
+                end=date(2026, 6, 4),
+                symbol="6J",
+                skip_download=True,
+                total_chunks=1,
+            )
+
+        assert metrics["total_batches"]     == 3, \
+            f"Esperado 3 batches, got {metrics['total_batches']}"
+        assert metrics["total_tape_events"] == expected_tape, \
+            f"Esperado {expected_tape} tape events, got {metrics['total_tape_events']}"
+        assert metrics["total_dom_levels"]  == expected_dom, \
+            f"Esperado {expected_dom} dom levels, got {metrics['total_dom_levels']}"
+        assert metrics["total_clusters"]    >  0, \
+            "Nenhum cluster gerado — ingest_batch() falhou silenciosamente"
+        assert runner.phase_profiler is not None, \
+            "phase_profiler não foi inicializado pelo run()"
+        assert len(metrics["signature_counts"]) > 0, \
+            "signature_counts vazio — classificação não ocorreu"
 
 
 # ---------------------------------------------------------------------------
