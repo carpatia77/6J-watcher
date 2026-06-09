@@ -217,65 +217,66 @@ class DuckDBRepository:
         )
 
     def insert_tape_events(self, events: List[TapeEvent]):
-        if not events:
-            return
-            
-        import pyarrow as pa
-        data = {
-            "symbol": [e.symbol for e in events],
-            "timestamp": [e.timestamp for e in events],
-            "timestamp_ns": [e.raw.get("timestamp_ns") for e in events],
-            "price": [e.price for e in events],
-            "volume": [e.volume for e in events],
-            "side": [e.side.value for e in events],
-            "raw": [_j(e.raw) for e in events]
-        }
-        arrow_table = pa.Table.from_pydict(data)
-        self.conn.execute("INSERT INTO tape_events SELECT * FROM arrow_table")
+        rows = [
+            [
+                e.symbol,
+                e.timestamp,
+                e.raw.get("timestamp_ns"),
+                e.price,
+                e.volume,
+                e.side.value,
+                _j(e.raw),
+            ]
+            for e in events
+        ]
+        if rows:
+            self.conn.executemany(
+                "INSERT INTO tape_events VALUES (?,?,?,?,?,?,?)", rows
+            )
 
     def insert_dom_levels(self, levels: List[DOMLevel]):
-        if not levels:
-            return
-            
-        import pyarrow as pa
-        data = {
-            "symbol": [l.symbol for l in levels],
-            "timestamp": [l.timestamp for l in levels],
-            "timestamp_ns": [l.raw.get("timestamp_ns") for l in levels],
-            "price": [l.price for l in levels],
-            "level_index": [l.level_index for l in levels],
-            "bid_volume": [l.bid_volume for l in levels],
-            "ask_volume": [l.ask_volume for l in levels],
-            "raw": [_j(l.raw) for l in levels]
-        }
-        arrow_table = pa.Table.from_pydict(data)
-        self.conn.execute("INSERT INTO dom_levels SELECT * FROM arrow_table")
+        rows = [
+            [
+                l.symbol,
+                l.timestamp,
+                l.raw.get("timestamp_ns"),
+                l.price,
+                l.level_index,
+                l.bid_volume,
+                l.ask_volume,
+                _j(l.raw),
+            ]
+            for l in levels
+        ]
+        if rows:
+            self.conn.executemany(
+                "INSERT INTO dom_levels VALUES (?,?,?,?,?,?,?,?)", rows
+            )
 
     def insert_clusters(self, clusters: List[LiquidityCluster]):
-        if not clusters:
-            return
-            
-        import pyarrow as pa
-        data = {
-            "symbol": [c.symbol for c in clusters],
-            "timestamp": [c.timestamp for c in clusters],
-            "timestamp_ns": [c.raw_payload.get("timestamp_ns") for c in clusters],
-            "price": [c.price for c in clusters],
-            "session": [c.session for c in clusters],
-            "behavior_signature": [c.behavior_signature.value for c in clusters],
-            "total_ask": [c.total_ask for c in clusters],
-            "total_bid": [c.total_bid for c in clusters],
-            "cumdelta": [c.cumdelta for c in clusters],
-            "deltamin": [c.deltamin for c in clusters],
-            "deltamax": [c.deltamax for c in clusters],
-            "delta_price_ticks": [c.delta_price_ticks for c in clusters],
-            "confidence": [c.confidence for c in clusters],
-            "outcome": [c.outcome for c in clusters],
-            "batch_id": [c.batch_id for c in clusters],
-            "raw_payload": [_j(c.raw_payload) for c in clusters]
-        }
-        arrow_table = pa.Table.from_pydict(data)
-        self.conn.execute("INSERT INTO liquidity_clusters SELECT * FROM arrow_table")
+        rows = [[
+            c.symbol,
+            c.timestamp,
+            c.raw_payload.get("timestamp_ns"),
+            c.price,
+            c.session,
+            c.behavior_signature.value,
+            c.total_ask,
+            c.total_bid,
+            c.cumdelta,
+            c.deltamin,
+            c.deltamax,
+            c.delta_price_ticks,
+            c.confidence,
+            c.outcome,
+            c.batch_id,
+            _j(c.raw_payload),
+        ] for c in clusters]
+        if rows:
+            self.conn.executemany(
+                "INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                rows,
+            )
 
     def upsert_key_level(self, level: KeyLevel):
         self.conn.execute(

@@ -29,7 +29,7 @@ class DatabentoAdapter:
         self.reconstructor = BookReconstructor(depth=10)
 
     # ------------------------------------------------------------------
-    # Path backtest: emite DataFrames Arrow (zero-copy para DuckDB)
+    # Path backtest: emite RecordBatches Arrow (zero-copy para DuckDB)
     # ------------------------------------------------------------------
 
     def stream_batches_arrow(
@@ -41,19 +41,17 @@ class DatabentoAdapter:
         Versão vetorizada de stream_batches() para o backtest.
 
         Emite (tape_batch, dom_batch) como pyarrow.RecordBatch por
-        janela de batch_size_seconds. A alocação interna usa blocos
-        contíguos de _ARROW_BLOCK elementos — evita listas Python
-        gigantes e fragmentação de memória.
+        janela de batch_size_seconds.
 
-        Os RecordBatches são passados diretamente para
-        DuckDBRepository.bulk_insert_arrow() via zero-copy.
+        BUG5 FIX: o evento que cruza a fronteira de janela não é mais
+        descartado — após _clear() e reset de batch_start_ns, o evento
+        é adicionado ao novo buffer antes de continuar o loop.
         """
         if not _ARROW_AVAILABLE:
             raise ImportError(
                 "pyarrow não instalado. Execute: pip install pyarrow"
             )
 
-        # Buffers nativos — tipos fixos alinhados com o schema DuckDB
         tape_bufs: dict = {
             "timestamp_ns": [], "timestamp": [], "price": [],
             "volume": [],       "side": [],
@@ -108,6 +106,8 @@ class DatabentoAdapter:
                 _clear(tape_bufs)
                 _clear(dom_bufs)
                 batch_start_ns = ts_ns
+                # BUG5 FIX: processa o evento da fronteira para o novo buffer
+                # (antes era pulado silenciosamente após o _clear)
 
             tape_event = self.reconstructor.extract_tape_event(record)
             if tape_event:
@@ -143,7 +143,7 @@ class DatabentoAdapter:
         """
         Path original — List[Dict] — usado por:
           - TestBacktestRunner.test_runner_stream_loop_mock (testes)
-          - Qualquer caller que não usa Arrow
+          - Fallback quando pyarrow não está instalado
 
         NÃO modificado. Mantido para compatibilidade total.
         """

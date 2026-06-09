@@ -21,6 +21,12 @@ try:
 except ImportError:
     TQDM_AVAILABLE = False
 
+try:
+    import pyarrow as pa
+    _ARROW_AVAILABLE = True
+except ImportError:
+    _ARROW_AVAILABLE = False
+
 from config import Config
 from repository_duckdb import DuckDBRepository
 from liquidity_matrix import LiquidityMatrix
@@ -45,14 +51,11 @@ class BacktestPhaseProfiler:
     para guiar a decisão de vetorização.
 
     4 fases instrumentadas:
-      stream   — DatabentoAdapter.stream_batches() (I/O + parse .dbn.zst)
+      stream   — DatabentoAdapter.stream_batches_arrow() (I/O + parse .dbn.zst)
       ingest   — IngestionService.ingest_batch() Python loop
-                 (_build_dom_index + _build_clusters_from_windows)
-      classify — engine.classify() dentro do ingest (separado via hook)
-      persist  — repo.insert_* + DuckDB commit
-
-    Nota: classify está embutido dentro do ingest na implementação atual.
-    O profiler estima o custo relativo via amostragem a cada 50 batches.
+                 (_build_clusters_sql via Arrow path)
+      classify — engine.classify_batch() vetorizado
+      persist  — repo.bulk_insert_arrow() + DuckDB commit
     """
 
     PHASES = ("stream", "ingest", "persist", "profiler", "other")
@@ -94,10 +97,6 @@ class BacktestPhaseProfiler:
         return result
 
     def summary(self, chunk_label: str, total_chunks: int) -> str:
-        """
-        Gera o bloco de texto que vai para o log após cada chunk.
-        Inclui breakdown de fases, throughput, e projeção para 8 meses.
-        """
         wall   = self.total_wall()
         phases = self.phase_totals()
         total_p = sum(phases.values()) or 1.0
@@ -118,8 +117,8 @@ class BacktestPhaseProfiler:
 
         phase_notes = {
             "stream":   "I/O + parse .dbn.zst",
-            "ingest":   "Python loop (HOT-PATH)",
-            "persist":  "DuckDB insert + commit",
+            "ingest":   "SQL window aggregation (HOT-PATH)",
+            "persist":  "bulk_insert_arrow + commit",
             "profiler": "SignatureProfiler SQL",
             "other":    "overhead/tqdm/logging",
         }
@@ -133,7 +132,6 @@ class BacktestPhaseProfiler:
             if p == "ingest":
                 hot_path_pct = pct
 
-        # Throughput
         if wall > 0:
             tp_events   = self._n_events   / wall
             tp_clusters = self._n_clusters / wall
@@ -141,14 +139,12 @@ class BacktestPhaseProfiler:
             lines.append(f"  Throughput: {tp_events:>8,.0f} tape-events/s")
             lines.append(f"             {tp_clusters:>8,.0f} clusters/s")
 
-        # Projeção para os chunks restantes
-        remaining = total_chunks - 1   # chunks restantes após este
+        remaining = total_chunks - 1
         proj_h = (wall / 3600) * remaining
         lines.append("")
         lines.append(f"  Projeção restante ({remaining} chunks): ~{proj_h:.1f}h")
         lines.append(f"  Projeção total    ({total_chunks} chunks): ~{wall/3600 * total_chunks:.1f}h")
 
-        # Recomendação de vetorização (só após chunk 1)
         lines.append("")
         if hot_path_pct >= 60.0:
             lines.append("  [VECTORIZE] HOT-PATH > 60% do tempo total.")
@@ -227,10 +223,7 @@ class BacktestRunner:
             "processing_time_seconds": 0.0, "report": "",
         }
 
-        # Expoem o profiler para o orquestrador ler após chunk 1
         self.phase_profiler: Optional[BacktestPhaseProfiler] = None
-
-        # Timestamp de mercado do último batch processado
         self._last_market_ts: Optional[datetime] = None
 
     def run(
@@ -239,7 +232,7 @@ class BacktestRunner:
         end: date,
         symbol: str = "6J",
         skip_download: bool = False,
-        total_chunks: int = 1,    # passa o total de chunks para projeção correta
+        total_chunks: int = 1,
     ) -> Dict:
         self.metrics = {
             "total_batches": 0, "total_tape_events": 0, "total_dom_levels": 0,
@@ -249,7 +242,6 @@ class BacktestRunner:
         logger.info("=== Backtest iniciado: %s -> %s ===", start, end)
         wall_start = time.time()
 
-        # Inicializa profiler para este chunk
         prof = BacktestPhaseProfiler()
         prof.start_run()
         self.phase_profiler = prof
@@ -270,44 +262,79 @@ class BacktestRunner:
             pbar = None
             logger.warning("tqdm nao instalado. Execute: pip install tqdm")
 
-        # ── stream loop instrumentado ───────────────────────────────────────────
-        stream_iter = self.adapter.stream_batches(file_path, skip_dom=self.skip_dom)
+        # ── BUG1 FIX: usa stream_batches_arrow() — path vetorizado (Arrow RecordBatch) ──
+        if _ARROW_AVAILABLE:
+            stream_iter = self.adapter.stream_batches_arrow(file_path, skip_dom=self.skip_dom)
+            use_arrow = True
+        else:
+            logger.warning("[Runner] pyarrow não disponível — fallback para stream_batches() List[Dict]")
+            stream_iter = self.adapter.stream_batches(file_path, skip_dom=self.skip_dom)
+            use_arrow = False
+
+        batch_id_counter = 0
 
         while True:
-            # Fase: stream (I/O + parse .dbn.zst)
             t0_stream = time.perf_counter()
             try:
-                tape_rows, dom_rows = next(stream_iter)
+                tape_rb, dom_rb = next(stream_iter)
             except StopIteration:
                 break
             prof.record("stream", time.perf_counter() - t0_stream)
 
-            # Fase: ingest (Python loop hot-path)
-            t0_ingest = time.perf_counter()
-            clusters = self.service.ingest_batch(tape_rows, dom_rows, symbol, top_n=10)
-            t_ingest = time.perf_counter() - t0_ingest
+            batch_id_counter += 1
+            batch_id = f"{symbol}_{start}_{batch_id_counter:06d}"
 
-            # Fase: persist (DuckDB insert está dentro do ingest mas é separado via subtraição)
-            # Não há como separar sem refatorar o ingest_batch.
-            # persist é estimado como proporcional ao número de rows inseridas.
-            # A distinção precisa para decisão está no total ingest vs stream.
-            prof.record("ingest", t_ingest)
+            if use_arrow:
+                # ── BUG2 FIX: num_rows em vez de len() ──
+                n_tape = tape_rb.num_rows
+                n_dom  = dom_rb.num_rows
+
+                # Persistência Arrow zero-copy
+                t0_persist = time.perf_counter()
+                self.repo.bulk_insert_arrow(symbol, batch_id, tape_rb, dom_rb)
+                prof.record("persist", time.perf_counter() - t0_persist)
+
+                # Ingestão SQL (Fase 2 — _build_clusters_sql)
+                t0_ingest = time.perf_counter()
+                # Converte RecordBatch para List[Dict] com timestamp_ns para acionar PATH A
+                tape_rows = tape_rb.to_pylist()
+                dom_rows  = dom_rb.to_pylist()
+                clusters = self.service.ingest_batch(tape_rows, dom_rows, symbol, batch_id=batch_id, top_n=10)
+                prof.record("ingest", time.perf_counter() - t0_ingest)
+
+                # ── BUG3 FIX: extrai último timestamp via coluna Arrow ──
+                if n_tape > 0:
+                    try:
+                        last_ts_str = tape_rb.column("timestamp")[-1].as_py()
+                        ts = _parse_market_ts(last_ts_str)
+                        if ts:
+                            self._last_market_ts = ts
+                    except Exception:
+                        pass
+            else:
+                # Fallback List[Dict] (sem Arrow)
+                tape_rows, dom_rows = tape_rb, dom_rb
+                n_tape = len(tape_rows)
+                n_dom  = len(dom_rows)
+
+                t0_ingest = time.perf_counter()
+                clusters = self.service.ingest_batch(tape_rows, dom_rows, symbol, top_n=10)
+                prof.record("ingest", time.perf_counter() - t0_ingest)
+
+                if tape_rows:
+                    ts = _parse_market_ts(tape_rows[-1].get("timestamp", ""))
+                    if ts:
+                        self._last_market_ts = ts
 
             self.metrics["total_batches"]     += 1
-            self.metrics["total_tape_events"] += len(tape_rows)
-            self.metrics["total_dom_levels"]  += len(dom_rows)
+            self.metrics["total_tape_events"] += n_tape
+            self.metrics["total_dom_levels"]  += n_dom
             self.metrics["total_clusters"]    += len(clusters)
-            prof.tick_batch(len(tape_rows), len(dom_rows), len(clusters))
+            prof.tick_batch(n_tape, n_dom, len(clusters))
 
             for c in clusters:
                 sig = c.behavior_signature.value
                 self.metrics["signature_counts"][sig] = self.metrics["signature_counts"].get(sig, 0) + 1
-
-            # Atualiza timestamp de mercado
-            if tape_rows:
-                ts = _parse_market_ts(tape_rows[-1].get("timestamp", ""))
-                if ts:
-                    self._last_market_ts = ts
 
             if pbar:
                 pbar.set_postfix_str(str(self.metrics["total_clusters"]))
@@ -336,7 +363,6 @@ class BacktestRunner:
 
         self.repo.commit()
 
-        # Fase: profiler SQL
         if self.skip_profiler:
             logger.info("[Profiler] skip_profiler=True — pulando calibragem MFE/MAE.")
         else:
@@ -356,7 +382,6 @@ class BacktestRunner:
             except Exception:
                 logger.exception("[Profiler] Falha na calibragem — continuando sem atualizar profile:")
 
-        # Log do summary de fases
         summary_text = prof.summary(label, total_chunks)
         for line in summary_text.splitlines():
             logger.info(line)
