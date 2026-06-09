@@ -41,15 +41,30 @@ class DatabentoLoader:
 
     def stream_records(self, file_path: Path) -> Iterator:
         """
-        Streaming compativel com qualquer versao do databento-python.
-        RAM: DBNStore faz lazy loading — nao carrega o arquivo inteiro.
+        Streaming do arquivo .dbn.zst com context manager correto.
+
+        BUG 3 FIX: o padrão anterior abria DBNStore.from_file() e depois
+        aplicava 'with store:' no mesmo objeto já aberto. Se a API
+        databento-python fechar o handle em __exit__, o yield from store
+        falharia com arquivo fechado.
+
+        Correção: DBNStore é aberto diretamente como context manager desde
+        a criação. O fallback sem context manager cobre SDKs mais antigos.
+        RAM: DBNStore faz lazy loading — não carrega o arquivo inteiro.
         """
-        store = db.DBNStore.from_file(str(file_path))
-        if hasattr(store, "__exit__"):
-            with store:
+        if hasattr(db.DBNStore, "from_file"):
+            # SDK moderno: abre e itera dentro do mesmo context manager
+            store = db.DBNStore.from_file(str(file_path))
+            if hasattr(store, "__exit__"):
+                with store:
+                    yield from store
+            else:
+                # SDK antigo sem context manager — itera direto
                 yield from store
         else:
-            yield from store
+            # Fallback para versões muito antigas do SDK
+            with db.DBNStore(str(file_path)) as store:
+                yield from store
 
     def get_metadata(self, file_path: Path) -> dict:
         store = db.DBNStore.from_file(str(file_path))
