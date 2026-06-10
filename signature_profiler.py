@@ -77,9 +77,9 @@ class SignatureProfiler:
               AND (
                 CASE WHEN c.timestamp_ns IS NOT NULL AND t.timestamp_ns IS NOT NULL
                      THEN t.timestamp_ns > c.timestamp_ns
-                          AND t.timestamp_ns <= c.timestamp_ns + {horizon_ns}
+                          AND t.timestamp_ns <= c.timestamp_ns + (CASE WHEN c.behavior_signature = 'spoofing_wall' THEN 120000000000 ELSE {horizon_ns} END)
                      ELSE t.timestamp > c.timestamp
-                          AND t.timestamp <= c.timestamp + {interval_clause}
+                          AND t.timestamp <= c.timestamp + INTERVAL 1 MINUTE * (CASE WHEN c.behavior_signature = 'spoofing_wall' THEN 2 ELSE {self.horizon_minutes} END)
                 END
               )
             WHERE c.symbol = '{sym_safe}'
@@ -100,6 +100,8 @@ class SignatureProfiler:
                     WHEN behavior_signature IN (
                         'iceberg_distribution', 'absorption_passive'
                     ) THEN c_price - min_future_price
+                    WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_bid > total_ask THEN max_future_price - c_price
+                    WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_ask > total_bid THEN c_price - min_future_price
                     ELSE GREATEST(
                         max_future_price - c_price,
                         c_price - min_future_price
@@ -112,6 +114,8 @@ class SignatureProfiler:
                     WHEN behavior_signature IN (
                         'iceberg_distribution', 'absorption_passive'
                     ) THEN max_future_price - c_price
+                    WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_bid > total_ask THEN c_price - min_future_price
+                    WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_ask > total_bid THEN max_future_price - c_price
                     ELSE GREATEST(
                         max_future_price - c_price,
                         c_price - min_future_price
@@ -250,7 +254,7 @@ class SignatureProfiler:
                 "count":         int(count),
                 "win_rate":      round(wins / count, 3),
                 "profit_factor": round(pf, 2),
-                "avg_mfe":       round(row["avg_mfe"] or 0, 5),
+                "avg_mfe":       round(row["avg_mfe"] or 0, 7),
             }
 
         MIN_SAMPLES = 100
