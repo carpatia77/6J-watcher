@@ -112,22 +112,40 @@ class DatabentoAdapter:
                 # BUG5 FIX: processa o evento da fronteira para o novo buffer
                 # (antes era pulado silenciosamente após o _clear)
 
-            tape_event = self.reconstructor.extract_tape_event(record)
-            if tape_event:
-                tape_bufs["timestamp_ns"].append(tape_event.get("timestamp_ns"))
-                tape_bufs["price"].append(tape_event["price"])
-                tape_bufs["volume"].append(tape_event["volume"])
-                tape_bufs["side"].append(tape_event["side"])
+            action = getattr(record, "action", None)
+            if getattr(action, "value", action) == 84:  # ACTION_TRADE
+                size = getattr(record, "size", 0)
+                if size > 0:
+                    side_char = str(getattr(record, "side", "N")).upper()
+                    if side_char == "B":
+                        side = "buy"
+                    elif side_char == "A":
+                        side = "sell"
+                    else:
+                        side = None
+                        
+                    if side:
+                        tape_bufs["timestamp_ns"].append(ts_ns)
+                        tape_bufs["price"].append(record.price / 1_000_000_000)
+                        tape_bufs["volume"].append(size)
+                        tape_bufs["side"].append(side)
 
             if not skip_dom:
-                snapshot = self.reconstructor.process_record(record)
-                if snapshot:
-                    for row in snapshot.to_dom_rows():
-                        dom_bufs["timestamp_ns"].append(row.get("timestamp_ns"))
-                        dom_bufs["price"].append(row["price"])
-                        dom_bufs["level_index"].append(row["level_index"])
-                        dom_bufs["bid_volume"].append(row["bid_volume"])
-                        dom_bufs["ask_volume"].append(row["ask_volume"])
+                if hasattr(record, "levels") and record.levels:
+                    depth = self.reconstructor.depth
+                    for i, lv in enumerate(record.levels[:depth]):
+                        # Bid level
+                        dom_bufs["timestamp_ns"].append(ts_ns)
+                        dom_bufs["price"].append(lv.bid_px / 1_000_000_000)
+                        dom_bufs["level_index"].append(i)
+                        dom_bufs["bid_volume"].append(lv.bid_sz)
+                        dom_bufs["ask_volume"].append(0)
+                        # Ask level
+                        dom_bufs["timestamp_ns"].append(ts_ns)
+                        dom_bufs["price"].append(lv.ask_px / 1_000_000_000)
+                        dom_bufs["level_index"].append(i)
+                        dom_bufs["bid_volume"].append(0)
+                        dom_bufs["ask_volume"].append(lv.ask_sz)
 
         if tape_bufs["timestamp_ns"] or dom_bufs["timestamp_ns"]:
             yield _flush_arrow(tape_bufs, dom_bufs)
