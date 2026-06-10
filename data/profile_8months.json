@@ -1,0 +1,219 @@
+{
+  "metadata": {
+    "generated_at": "2026-06-10T13:51:18.413597",
+    "type": "empirical_percentiles_duckdb",
+    "window_ms": 250
+  },
+  "signatures": {
+    "defense_line_OFF_HOURS": {
+      "count": 1832,
+      "win_rate": 0.501,
+      "profit_factor": 795.4,
+      "avg_mfe": 0.0
+    },
+    "iceberg_accumulation_OFF_HOURS": {
+      "count": 75,
+      "win_rate": 0.48,
+      "profit_factor": Infinity,
+      "avg_mfe": 0.0
+    },
+    "unknown_ASIAN": {
+      "count": 97802,
+      "win_rate": 0.0,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "iceberg_distribution_ASIAN": {
+      "count": 298,
+      "win_rate": 0.601,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "absorption_passive_ASIAN": {
+      "count": 600,
+      "win_rate": 0.593,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "defense_line_NEW_YORK": {
+      "count": 10957,
+      "win_rate": 0.491,
+      "profit_factor": 1789.83,
+      "avg_mfe": 0.0
+    },
+    "spoofing_wall_NEW_YORK": {
+      "count": 26,
+      "win_rate": 0.0,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "defense_line_LONDON": {
+      "count": 6259,
+      "win_rate": 0.416,
+      "profit_factor": 1028.68,
+      "avg_mfe": 0.0
+    },
+    "iceberg_accumulation_NEW_YORK": {
+      "count": 59,
+      "win_rate": 0.492,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "iceberg_accumulation_LONDON": {
+      "count": 55,
+      "win_rate": 0.527,
+      "profit_factor": Infinity,
+      "avg_mfe": 0.0
+    },
+    "spoofing_wall_OFF_HOURS": {
+      "count": 45,
+      "win_rate": 0.0,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "spoofing_wall_LONDON": {
+      "count": 26,
+      "win_rate": 0.0,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "unknown_OFF_HOURS": {
+      "count": 16429,
+      "win_rate": 0.0,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "absorption_passive_OFF_HOURS": {
+      "count": 172,
+      "win_rate": 0.523,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "iceberg_distribution_OFF_HOURS": {
+      "count": 82,
+      "win_rate": 0.573,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "iceberg_accumulation_ASIAN": {
+      "count": 297,
+      "win_rate": 0.448,
+      "profit_factor": Infinity,
+      "avg_mfe": 0.0
+    },
+    "defense_line_ASIAN": {
+      "count": 10587,
+      "win_rate": 0.493,
+      "profit_factor": 1446.97,
+      "avg_mfe": 0.0
+    },
+    "spoofing_wall_ASIAN": {
+      "count": 156,
+      "win_rate": 0.0,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "unknown_NEW_YORK": {
+      "count": 99329,
+      "win_rate": 0.0,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "iceberg_distribution_NEW_YORK": {
+      "count": 55,
+      "win_rate": 0.691,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "unknown_LONDON": {
+      "count": 54530,
+      "win_rate": 0.0,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "iceberg_distribution_LONDON": {
+      "count": 76,
+      "win_rate": 0.579,
+      "profit_factor": Infinity,
+      "avg_mfe": 0.0
+    },
+    "absorption_passive_LONDON": {
+      "count": 88,
+      "win_rate": 0.523,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    },
+    "absorption_passive_NEW_YORK": {
+      "count": 76,
+      "win_rate": 0.487,
+      "profit_factor": Infinity,
+      "avg_mfe": 1e-05
+    }
+  },
+  "thresholds": {
+    "ASIAN": {
+      "vol_percentiles": {
+        "50": 3.0,
+        "75": 10.0,
+        "90": 20.0,
+        "95": 30.0,
+        "99": 65.0
+      },
+      "imb_percentiles": {
+        "50": 3.0,
+        "75": 7.0,
+        "90": 15.0,
+        "95": 23.0,
+        "99": 51.0
+      }
+    },
+    "LONDON": {
+      "vol_percentiles": {
+        "50": 4.0,
+        "75": 11.0,
+        "90": 23.0,
+        "95": 36.0,
+        "99": 97.0
+      },
+      "imb_percentiles": {
+        "50": 3.0,
+        "75": 8.0,
+        "90": 17.0,
+        "95": 27.0,
+        "99": 73.66999999999825
+      }
+    },
+    "NEW_YORK": {
+      "vol_percentiles": {
+        "50": 4.0,
+        "75": 11.0,
+        "90": 24.0,
+        "95": 38.0,
+        "99": 104.0
+      },
+      "imb_percentiles": {
+        "50": 3.0,
+        "75": 8.0,
+        "90": 18.0,
+        "95": 29.0,
+        "99": 80.0
+      }
+    },
+    "OFF_HOURS": {
+      "vol_percentiles": {
+        "50": 4.0,
+        "75": 10.0,
+        "90": 20.0,
+        "95": 30.0,
+        "99": 63.0
+      },
+      "imb_percentiles": {
+        "50": 3.0,
+        "75": 7.0,
+        "90": 15.0,
+        "95": 23.0,
+        "99": 50.659999999999854
+      }
+    }
+  }
+}
