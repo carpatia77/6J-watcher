@@ -100,14 +100,16 @@ class BookReconstructor:
         ts_ns = record.ts_event
         price = record.price / FIXED_POINT
         size = getattr(record, "size", 0)
-        if size == 0:
+        if not size:
             return None
 
-        side_char = str(getattr(record, "side", "N")).upper()
+        # Robust against str, enum, and 'Side.BID' / 'B' / 'BID'
+        side_raw = str(getattr(record, "side", "N"))
+        side_char = side_raw.split(".")[-1].strip().upper()[0]
         if side_char == "B":
-            side = "buy"
+            side = 'buy'
         elif side_char == "A":
-            side = "sell"
+            side = 'sell'
         else:
             return None
 

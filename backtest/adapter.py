@@ -117,7 +117,8 @@ class DatabentoAdapter:
             if action_val in ('T', '84', 84):  # ACTION_TRADE
                 size = getattr(record, "size", 0)
                 if size > 0:
-                    side_char = str(getattr(record, "side", "N")).upper()
+                    side_raw = str(getattr(record, "side", "N"))
+                    side_char = side_raw.split(".")[-1].strip().upper()[0]
                     if side_char == "B":
                         side = "buy"
                     elif side_char == "A":
