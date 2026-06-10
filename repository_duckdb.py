@@ -143,14 +143,15 @@ class DuckDBRepository:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_price         ON liquidity_clusters(price)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_timestamp     ON liquidity_clusters(timestamp)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts     ON liquidity_clusters(symbol, timestamp)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts     ON tape_events(symbol, timestamp)")
+        self.conn.execute("DROP INDEX IF EXISTS idx_te_symbol_ts")
 
         # Índices BIGINT (backtest)
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_te_symbol_ts_ns  ON tape_events(symbol, timestamp_ns)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts_ns  ON liquidity_clusters(symbol, timestamp_ns)")
-        # Índice crítico para ASOF JOIN DOM na Fase 2
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_dom_symbol_ts_ns ON dom_levels(symbol, timestamp_ns)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_dom_price        ON dom_levels(price)")
+        # Remover indices antigos que matam o bulk_insert:
+        self.conn.execute("DROP INDEX IF EXISTS idx_te_symbol_ts_ns")
+        self.conn.execute("DROP INDEX IF EXISTS idx_lc_symbol_ts_ns")
+        # Remover indices antigos que matam o bulk_insert:
+        self.conn.execute("DROP INDEX IF EXISTS idx_dom_symbol_ts_ns")
+        self.conn.execute("DROP INDEX IF EXISTS idx_dom_price")
 
     # ── Bulk Insert Arrow (backtest path) ─────────────────────────────────────────────
 
