@@ -134,9 +134,22 @@ def main():
         logger.error("DATABENTO_API_KEY nao definida - abortando.")
         sys.exit(1)
 
+    native_db_dir = "/home/aidea/data_backtest"
+    import os
+    if not os.path.exists(native_db_dir):
+        os.makedirs(native_db_dir, exist_ok=True)
+        
+    native_db_path = f"{native_db_dir}/backtest_8months.db"
+    
+    # remove file se existir
+    if os.path.exists(native_db_path):
+        os.remove(native_db_path)
+    if os.path.exists(native_db_path + ".wal"):
+        os.remove(native_db_path + ".wal")
+
     runner = BacktestRunner(
         api_key=API_KEY,
-        db_path="./data/backtest_8months.db",
+        db_path=native_db_path,
         profile_path="./data/profile_8months.json",
         batch_size_seconds=60,
         skip_dom=False,
