@@ -141,11 +141,8 @@ def main():
         
     native_db_path = f"{native_db_dir}/backtest_8months.db"
     
-    # remove file se existir
-    if os.path.exists(native_db_path):
-        os.remove(native_db_path)
-    if os.path.exists(native_db_path + ".wal"):
-        os.remove(native_db_path + ".wal")
+    # REMOVIDO: A delecao incondicional do banco destruiu os 650M de linhas da run anterior!
+    # O DuckDB fara o append/upsert normalmente.
 
     runner = BacktestRunner(
         api_key=API_KEY,

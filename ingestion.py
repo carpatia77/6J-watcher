@@ -443,8 +443,16 @@ class IngestionService:
             clusters = self._build_clusters_sql(symbol, batch_id, tape_rb, dom_rb)
             tape = []
             dom  = []
-            # Na fase SQL os dados ja estao inseridos no DuckDB via Arrow bulk_insert.
-            # E pular o parse iterativo de milhoes de eventos salva >2h de tempo de execucao.
+            # Na fase SQL a insercao de tape/dom e feita assincronamente pelo Arrow.
+            # Mas os clusters que acabaram de ser formados pela CTE precisam ser salvos.
+            if clusters:
+                self.repo.begin()
+                try:
+                    self.repo.insert_clusters(clusters)
+                    self.repo.commit()
+                except Exception:
+                    self.repo.rollback()
+                    raise
         else:
             tape = parse_tape_rows(tape_rows, symbol)
             dom  = parse_dom_rows(dom_rows, symbol)
