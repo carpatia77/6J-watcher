@@ -135,9 +135,11 @@ class IngestionService:
                 COALESCE(d.bid_volume, 0) AS dom_bid,
                 COALESCE(d.ask_volume, 0) AS dom_ask
             FROM windowed w
-            ASOF LEFT JOIN dom_levels d
-                ON  d.symbol       = $symbol
-                AND d.price        = w.last_price
+            ASOF LEFT JOIN (
+                SELECT * FROM dom_levels 
+                WHERE symbol = $symbol AND batch_id = $batch_id
+            ) d
+                ON  d.price        = w.last_price
                 AND d.timestamp_ns <= w.w_end_ns
         )
         SELECT
