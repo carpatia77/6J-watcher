@@ -97,12 +97,19 @@ html_content = f"""
 
         var trace_cvd = {{
             x: labels, y: cumdelta,
-            name: 'CVD', type: 'scatter', 
+            name: 'CVD Line', type: 'scatter', 
             mode: 'lines+markers',
             line: {{color: '#FF6B35', width: 2}},
             marker: {{color: sig_colors, size: 6}},
             text: signatures
         }};
+
+        // Dummy traces for the Legend
+        var leg_abs = {{x: [null], y: [null], name: '🟢 Absorption', type: 'scatter', mode: 'markers', marker: {{color: 'orange', size: 8}}}};
+        var leg_vac = {{x: [null], y: [null], name: '🔴 Vacuum', type: 'scatter', mode: 'markers', marker: {{color: 'red', size: 8}}}};
+        var leg_mbuy = {{x: [null], y: [null], name: '🚀 Momentum Buy', type: 'scatter', mode: 'markers', marker: {{color: 'lime', size: 8}}}};
+        var leg_msell = {{x: [null], y: [null], name: '☄️ Momentum Sell', type: 'scatter', mode: 'markers', marker: {{color: 'fuchsia', size: 8}}}};
+        var leg_unk = {{x: [null], y: [null], name: '⚪ Unknown (Noise)', type: 'scatter', mode: 'markers', marker: {{color: 'gray', size: 8}}}};
 
         var layout1 = {{
             title: 'Cumulative Volume Delta (CVD) vs DeltaMin/Max',
@@ -117,7 +124,7 @@ html_content = f"""
             ]
         }};
 
-        Plotly.newPlot('plot1', [trace_cvd_baseline1, trace_max, trace_cvd_baseline2, trace_min, trace_cvd], layout1);
+        Plotly.newPlot('plot1', [trace_cvd_baseline1, trace_max, trace_cvd_baseline2, trace_min, trace_cvd, leg_abs, leg_vac, leg_mbuy, leg_msell, leg_unk], layout1);
 
         // Traces for Volume
         var trace_bid = {{
