@@ -105,11 +105,11 @@ html_content = f"""
         }};
 
         // Dummy traces for the Legend
-        var leg_abs = {{x: [null], y: [null], name: '🟢 Absorption', type: 'scatter', mode: 'markers', marker: {{color: 'orange', size: 8}}}};
+        var leg_abs = {{x: [null], y: [null], name: '🟢 Absorção', type: 'scatter', mode: 'markers', marker: {{color: 'orange', size: 8}}}};
         var leg_vac = {{x: [null], y: [null], name: '🔴 Vacuum', type: 'scatter', mode: 'markers', marker: {{color: 'red', size: 8}}}};
-        var leg_mbuy = {{x: [null], y: [null], name: '🚀 Momentum Buy', type: 'scatter', mode: 'markers', marker: {{color: 'lime', size: 8}}}};
-        var leg_msell = {{x: [null], y: [null], name: '☄️ Momentum Sell', type: 'scatter', mode: 'markers', marker: {{color: 'fuchsia', size: 8}}}};
-        var leg_unk = {{x: [null], y: [null], name: '⚪ Unknown (Noise)', type: 'scatter', mode: 'markers', marker: {{color: 'gray', size: 8}}}};
+        var leg_mbuy = {{x: [null], y: [null], name: '🚀 Momentum Compra', type: 'scatter', mode: 'markers', marker: {{color: 'lime', size: 8}}}};
+        var leg_msell = {{x: [null], y: [null], name: '☄️ Momentum Venda', type: 'scatter', mode: 'markers', marker: {{color: 'fuchsia', size: 8}}}};
+        var leg_unk = {{x: [null], y: [null], name: '⚪ Não classificado', type: 'scatter', mode: 'markers', marker: {{color: 'gray', size: 8}}}};
 
         var layout1 = {{
             title: 'Cumulative Volume Delta (CVD) vs DeltaMin/Max',
