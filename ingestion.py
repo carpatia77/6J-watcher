@@ -67,25 +67,26 @@ class IngestionService:
         self,
         symbol: str,
         batch_id: str,
+        tape_rb = None,
+        dom_rb = None,
     ) -> List[LiquidityCluster]:
         """
         Substitui _build_clusters_from_windows() no path de backtest.
-
-        Os dados já estão em tape_events e dom_levels (inseridos via
-        bulk_insert_arrow antes desta chamada). A query usa 3 CTEs:
-
-          tape_ordered   — delta por evento (+vol buy / -vol sell)
-          running_calcs  — SUM(delta) OVER window (estado cumulativo puro)
-          windowed       — GROUP BY bucket, MIN/MAX sobre running_delta
-                           (evita o paradoxo GROUP BY + window do DuckDB)
-          dom_joined     — ASOF LEFT JOIN em timestamp_ns
-
-        Retorna LiquidityCluster[] prontos para classify_batch().
+        Pode rodar diretamente na memória usando PyArrow (zero I/O) ou contra o disco.
         """
         tick_size  = self.cfg.tick_size
-        tick_range = tick_size * 6  # janela de preço para ASOF JOIN DOM (±6 ticks)
+        tick_range = tick_size * 6
 
-        sql = """
+        # Se buffers em memoria foram passados, usamos as views registradas (zero disk I/O)
+        tape_source = "_tape_view" if tape_rb is not None else "tape_events WHERE symbol = $symbol AND batch_id = $batch_id"
+        dom_source  = "_dom_view"  if dom_rb  is not None else "(SELECT * FROM dom_levels WHERE symbol = $symbol AND batch_id = $batch_id)"
+
+        if tape_rb is not None:
+            self.repo.conn.register("_tape_view", tape_rb)
+        if dom_rb is not None:
+            self.repo.conn.register("_dom_view", dom_rb)
+
+        sql = f"""
         WITH tape_ordered AS (
             SELECT
                 timestamp_ns,
@@ -95,8 +96,7 @@ class IngestionService:
                 side,
                 CASE WHEN side = 'buy' THEN volume ELSE -volume END AS delta,
                 (timestamp_ns // $bucket_ns) AS bucket_id
-            FROM tape_events
-            WHERE symbol = $symbol AND batch_id = $batch_id
+            FROM {tape_source}
         ),
         running_calcs AS (
             SELECT
@@ -135,10 +135,7 @@ class IngestionService:
                 COALESCE(d.bid_volume, 0) AS dom_bid,
                 COALESCE(d.ask_volume, 0) AS dom_ask
             FROM windowed w
-            ASOF LEFT JOIN (
-                SELECT * FROM dom_levels 
-                WHERE symbol = $symbol AND batch_id = $batch_id
-            ) d
+            ASOF LEFT JOIN {dom_source} d
                 ON  d.price        = w.last_price
                 AND d.timestamp_ns <= w.w_end_ns
         )
@@ -163,6 +160,11 @@ class IngestionService:
             "batch_id":  batch_id,
             "bucket_ns": self.cfg.window_ns,
         }).fetchall()
+
+        if tape_rb is not None:
+            self.repo.conn.unregister("_tape_view")
+        if dom_rb is not None:
+            self.repo.conn.unregister("_dom_view")
 
         if not rows:
             return []
@@ -428,6 +430,8 @@ class IngestionService:
         batch_id:  Optional[str] = None,
         top_n:     int = 5,
         is_sql_path: bool = False,
+        tape_rb = None,
+        dom_rb = None,
     ) -> List[LiquidityCluster]:
         if not batch_id:
             batch_id = str(time.time_ns())
@@ -435,7 +439,7 @@ class IngestionService:
         is_sql_path = is_sql_path or bool(tape_rows and "timestamp_ns" in tape_rows[0])
 
         if is_sql_path:
-            clusters = self._build_clusters_sql(symbol, batch_id)
+            clusters = self._build_clusters_sql(symbol, batch_id, tape_rb, dom_rb)
             tape = []
             dom  = []
             # Na fase SQL os dados ja estao inseridos no DuckDB via Arrow bulk_insert.

@@ -214,6 +214,54 @@ class DuckDBRepository:
             """, [symbol, batch_id])
             self.conn.unregister("_dom_rb")
 
+    def bulk_insert_arrow_table(
+        self,
+        tape_table: "pa.Table",
+        dom_table:  "pa.Table",
+    ) -> None:
+        """
+        Insere a tabela inteira (concatenada em memoria) no DuckDB de uma vez só.
+        """
+        if not _ARROW_AVAILABLE:
+            raise ImportError("pyarrow não instalado")
+
+        if tape_table.num_rows > 0:
+            self.conn.register("_tape_table", tape_table)
+            self.conn.execute("""
+                INSERT INTO tape_events
+                    (symbol, batch_id, timestamp, timestamp_ns, price, volume, side, raw)
+                SELECT
+                    symbol,
+                    batch_id,
+                    timestamp::TIMESTAMP,
+                    timestamp_ns,
+                    price,
+                    volume,
+                    side,
+                    '{}' AS raw
+                FROM _tape_table
+            """)
+            self.conn.unregister("_tape_table")
+
+        if dom_table.num_rows > 0:
+            self.conn.register("_dom_table", dom_table)
+            self.conn.execute("""
+                INSERT INTO dom_levels
+                    (symbol, batch_id, timestamp, timestamp_ns, price, level_index, bid_volume, ask_volume, raw)
+                SELECT
+                    symbol,
+                    batch_id,
+                    timestamp::TIMESTAMP,
+                    timestamp_ns,
+                    price,
+                    level_index,
+                    bid_volume,
+                    ask_volume,
+                    '{}' AS raw
+                FROM _dom_table
+            """)
+            self.conn.unregister("_dom_table")
+
     # ── Inserts clássicos (produção / MQL5 path) ──────────────────────────────────────
 
     def upsert_daily_report(self, symbol: str, date_str: str, report_text: str):

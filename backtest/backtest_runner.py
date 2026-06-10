@@ -272,6 +272,28 @@ class BacktestRunner:
             use_arrow = False
 
         batch_id_counter = 0
+        tape_accumulator = []
+        dom_accumulator = []
+
+        def _flush_accumulators():
+            if tape_accumulator or dom_accumulator:
+                t0_flush = time.perf_counter()
+                
+                # Para o flush, concatenamos as listas em Tables
+                if tape_accumulator:
+                    tape_table = pa.Table.from_batches(tape_accumulator)
+                else:
+                    tape_table = pa.table({"symbol": pa.array([], type=pa.string()), "batch_id": pa.array([], type=pa.string()), "timestamp_ns": pa.array([], type=pa.int64()), "timestamp": pa.array([], type=pa.string()), "price": pa.array([], type=pa.float64()), "volume": pa.array([], type=pa.int32()), "side": pa.array([], type=pa.string())})
+                    
+                if dom_accumulator:
+                    dom_table = pa.Table.from_batches(dom_accumulator)
+                else:
+                    dom_table = pa.table({"symbol": pa.array([], type=pa.string()), "batch_id": pa.array([], type=pa.string()), "timestamp_ns": pa.array([], type=pa.int64()), "timestamp": pa.array([], type=pa.string()), "price": pa.array([], type=pa.float64()), "level_index": pa.array([], type=pa.int32()), "bid_volume": pa.array([], type=pa.int32()), "ask_volume": pa.array([], type=pa.int32())})
+                    
+                self.repo.bulk_insert_arrow_table(tape_table, dom_table)
+                prof.record("persist", time.perf_counter() - t0_flush)
+                tape_accumulator.clear()
+                dom_accumulator.clear()
 
         while True:
             t0_stream = time.perf_counter()
@@ -289,15 +311,24 @@ class BacktestRunner:
                 n_tape = tape_rb.num_rows
                 n_dom  = dom_rb.num_rows
 
-                # Persistência Arrow zero-copy
-                t0_persist = time.perf_counter()
-                self.repo.bulk_insert_arrow(symbol, batch_id, tape_rb, dom_rb)
-                prof.record("persist", time.perf_counter() - t0_persist)
-
-                # Ingestão SQL (Fase 2 — _build_clusters_sql)
+                # Ingestão SQL (Fase 2 — _build_clusters_sql) IN-MEMORY!
                 t0_ingest = time.perf_counter()
-                clusters = self.service.ingest_batch([], [], symbol, batch_id=batch_id, is_sql_path=True)
+                clusters = self.service.ingest_batch([], [], symbol, batch_id=batch_id, is_sql_path=True, tape_rb=tape_rb, dom_rb=dom_rb)
                 prof.record("ingest", time.perf_counter() - t0_ingest)
+
+                # Persistência Arrow Híbrida: Acumular e dar flush em bloco (Resolve I/O bottleneck do DuckDB)
+                import pyarrow as pa
+                if n_tape > 0:
+                    tape_rb = tape_rb.append_column("symbol", pa.array([symbol] * n_tape, type=pa.string()))
+                    tape_rb = tape_rb.append_column("batch_id", pa.array([batch_id] * n_tape, type=pa.string()))
+                    tape_accumulator.append(tape_rb)
+                if n_dom > 0:
+                    dom_rb = dom_rb.append_column("symbol", pa.array([symbol] * n_dom, type=pa.string()))
+                    dom_rb = dom_rb.append_column("batch_id", pa.array([batch_id] * n_dom, type=pa.string()))
+                    dom_accumulator.append(dom_rb)
+
+                if len(tape_accumulator) >= 200 or len(dom_accumulator) >= 200:
+                    _flush_accumulators()
 
                 # ── BUG3 FIX: extrai último timestamp via coluna Arrow ──
                 if n_tape > 0:
@@ -348,6 +379,9 @@ class BacktestRunner:
                 if self._last_market_ts:
                     self.matrix.prune_stale_data(hours=4, reference_time=self._last_market_ts)
                     logger.info("[prune] Matriz podada @ %s", self._last_market_ts.isoformat())
+
+        if use_arrow:
+            _flush_accumulators()
 
         if pbar:
             pbar.n = pbar.total
