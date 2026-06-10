@@ -226,6 +226,7 @@ class DuckDBRepository:
         rows = [
             [
                 e.symbol,
+                None, # batch_id
                 e.timestamp,
                 e.raw.get("timestamp_ns"),
                 e.price,
@@ -237,13 +238,14 @@ class DuckDBRepository:
         ]
         if rows:
             self.conn.executemany(
-                "INSERT INTO tape_events (symbol, timestamp, timestamp_ns, price, volume, side, raw) VALUES (?,?,?,?,?,?,?)", rows
+                "INSERT INTO tape_events (symbol, batch_id, timestamp, timestamp_ns, price, volume, side, raw) VALUES (?,?,?,?,?,?,?,?)", rows
             )
 
     def insert_dom_levels(self, levels: List[DOMLevel]):
         rows = [
             [
                 l.symbol,
+                None, # batch_id
                 l.timestamp,
                 l.raw.get("timestamp_ns"),
                 l.price,
@@ -256,7 +258,7 @@ class DuckDBRepository:
         ]
         if rows:
             self.conn.executemany(
-                "INSERT INTO dom_levels (symbol, timestamp, timestamp_ns, price, level_index, bid_volume, ask_volume, raw) VALUES (?,?,?,?,?,?,?,?)", rows
+                "INSERT INTO dom_levels (symbol, batch_id, timestamp, timestamp_ns, price, level_index, bid_volume, ask_volume, raw) VALUES (?,?,?,?,?,?,?,?,?)", rows
             )
 
     def insert_clusters(self, clusters: List[LiquidityCluster]):

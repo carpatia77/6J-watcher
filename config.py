@@ -22,6 +22,7 @@ class Config:
     host:            str   = "127.0.0.1"
     port:            int   = 8765
     min_occurrences: int   = 3
+    window_ns:       int   = 250_000_000
     session_utc: dict = field(default_factory=lambda: {
         "ASIAN":    (0,  8),
         "LONDON":   (8,  13),

@@ -296,10 +296,7 @@ class BacktestRunner:
 
                 # Ingestão SQL (Fase 2 — _build_clusters_sql)
                 t0_ingest = time.perf_counter()
-                # Converte RecordBatch para List[Dict] com timestamp_ns para acionar PATH A
-                tape_rows = tape_rb.to_pylist()
-                dom_rows  = dom_rb.to_pylist()
-                clusters = self.service.ingest_batch(tape_rows, dom_rows, symbol, batch_id=batch_id, top_n=10)
+                clusters = self.service.ingest_batch([], [], symbol, batch_id=batch_id, is_sql_path=True)
                 prof.record("ingest", time.perf_counter() - t0_ingest)
 
                 # ── BUG3 FIX: extrai último timestamp via coluna Arrow ──

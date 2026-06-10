@@ -35,8 +35,7 @@ from adaptive_pattern_engine import AdaptivePatternEngine
 from liquidity_matrix import LiquidityMatrix
 from repository_duckdb import DuckDBRepository
 
-_WINDOW_NS = 250_000_000   # 250ms em nanosegundos
-_BUCKET_NS  = 250_000_000  # alias semântico para a query SQL
+
 
 
 class IngestionService:
@@ -160,7 +159,7 @@ class IngestionService:
         rows = self.repo.conn.execute(sql, {
             "symbol":    symbol,
             "batch_id":  batch_id,
-            "bucket_ns": _BUCKET_NS,
+            "bucket_ns": self.cfg.window_ns,
         }).fetchall()
 
         if not rows:
@@ -426,18 +425,19 @@ class IngestionService:
         symbol:    str,
         batch_id:  Optional[str] = None,
         top_n:     int = 5,
+        is_sql_path: bool = False,
     ) -> List[LiquidityCluster]:
         if not batch_id:
             batch_id = str(time.time_ns())
 
-        is_sql_path = bool(tape_rows and "timestamp_ns" in tape_rows[0])
+        is_sql_path = is_sql_path or bool(tape_rows and "timestamp_ns" in tape_rows[0])
 
         if is_sql_path:
             clusters = self._build_clusters_sql(symbol, batch_id)
-            tape = parse_tape_rows(tape_rows, symbol)
-            dom  = parse_dom_rows(dom_rows, symbol)
+            tape = []
+            dom  = []
             # Na fase SQL os dados ja estao inseridos no DuckDB via Arrow bulk_insert.
-            # Entao pulamos a insercao repo.insert_tape_events etc.
+            # E pular o parse iterativo de milhoes de eventos salva >2h de tempo de execucao.
         else:
             tape = parse_tape_rows(tape_rows, symbol)
             dom  = parse_dom_rows(dom_rows, symbol)

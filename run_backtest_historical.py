@@ -118,8 +118,15 @@ def _print_chunk1_decision_panel(runner: BacktestRunner):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Run historical backtest")
+    parser.add_argument("--start", type=str, help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end", type=str, help="End date (YYYY-MM-DD)")
+    parser.add_argument("--skip-profiler", action="store_true", help="Skip signature profiler generation")
+    args = parser.parse_args()
+
     logger.info("=" * 60)
-    logger.info("Iniciando orquestrador de backtest historico (8 meses)")
+    logger.info("Iniciando orquestrador de backtest historico")
     logger.info(f"Log salvo em: ./data/backtest_run.log")
     logger.info("=" * 60)
 
@@ -133,13 +140,24 @@ def main():
         profile_path="./data/profile_8months.json",
         batch_size_seconds=60,
         skip_dom=False,
+        skip_profiler=args.skip_profiler,
     )
 
     import time
-    for i, (start_dt, end_dt) in enumerate(CHUNKS):
+    
+    if args.start and args.end:
+        start_date = date.fromisoformat(args.start)
+        end_date = date.fromisoformat(args.end)
+        chunks_to_run = [(start_date, end_date)]
+    else:
+        chunks_to_run = CHUNKS
+
+    total_chunks = len(chunks_to_run)
+
+    for i, (start_dt, end_dt) in enumerate(chunks_to_run):
         logger.info("")
         logger.info("=============================================")
-        logger.info(f"PROCESSANDO CHUNK {i+1}/{TOTAL_CHUNKS}: {start_dt} -> {end_dt}")
+        logger.info(f"PROCESSANDO CHUNK {i+1}/{total_chunks}: {start_dt} -> {end_dt}")
         logger.info("=============================================")
         t0 = time.time()
 
@@ -150,7 +168,7 @@ def main():
                 start=start_dt,
                 end=end_dt,
                 symbol="6J",
-                total_chunks=TOTAL_CHUNKS,   # para projeção correta no profiler
+                total_chunks=total_chunks,   # para projeção correta no profiler
             )
         except Exception:
             logger.exception(f"CRASH no chunk {start_dt} - traceback completo:")
@@ -182,7 +200,7 @@ def main():
             logger.exception("Erro ao gerar relatorio parcial:")
 
         # Painel de decisão após chunk 1
-        if i == 0:
+        if i == 0 and total_chunks > 1:
             _print_chunk1_decision_panel(runner)
             # Pausa interativa apenas se BACKTEST_INTERACTIVE=1
             if os.getenv("BACKTEST_INTERACTIVE", "0") == "1":
@@ -212,7 +230,6 @@ def main():
         logger.info("Conexao DuckDB encerrada.")
 
     logger.info("Orquestrador concluido. Veja ./data/backtest_run.log para historico completo.")
-
 
 if __name__ == "__main__":
     main()
