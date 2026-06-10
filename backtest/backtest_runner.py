@@ -327,7 +327,10 @@ class BacktestRunner:
                     dom_rb = dom_rb.append_column("batch_id", pa.array([batch_id] * n_dom, type=pa.string()))
                     dom_accumulator.append(dom_rb)
 
-                if len(tape_accumulator) >= 200 or len(dom_accumulator) >= 200:
+                # Limita a represa em ~500.000 linhas de DOM para economizar RAM (WSL com 6GB)
+                total_dom_rows = sum(rb.num_rows for rb in dom_accumulator)
+                total_tape_rows = sum(rb.num_rows for rb in tape_accumulator)
+                if total_dom_rows >= 500_000 or total_tape_rows >= 500_000:
                     _flush_accumulators()
 
                 # ── BUG3 FIX: extrai último timestamp via coluna Arrow ──
