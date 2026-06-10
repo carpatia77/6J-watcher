@@ -16,8 +16,9 @@ query = """
         deltamax,
         behavior_signature
     FROM liquidity_clusters 
+    WHERE timestamp >= '2025-11-15'
     ORDER BY timestamp_ns
-    LIMIT 200 OFFSET 2000
+    LIMIT 500
 """
 
 rows = con.execute(query).fetchall()
@@ -73,11 +74,13 @@ html_content = f"""
         // Color mapping for behavior signatures
         var sig_colors = signatures.map(sig => {{
             var s = String(sig).toUpperCase();
-            if (s.includes("ABSORPTION")) return "orange";
-            if (s.includes("VACUUM")) return "red";
-            if (s.includes("BUY")) return "lime";
-            if (s.includes("SELL")) return "fuchsia";
-            return "gray";
+            if (s.includes("ABSORPTION")) return "#ff9900"; // Orange
+            if (s.includes("VACUUM")) return "#ff0044"; // Neon Red
+            if (s.includes("SPOOFING")) return "#00ffff"; // Cyan
+            if (s.includes("ICEBERG")) return "#0088ff"; // Deep Blue
+            if (s.includes("DEFENSE")) return "#b82eba"; // Purple
+            if (s.includes("BREAKOUT")) return "#00ff00"; // Lime
+            return "rgba(100, 100, 100, 0.4)"; // Gray (Unknown)
         }});
 
         // Traces for CVD and Bands

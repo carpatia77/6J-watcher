@@ -123,6 +123,8 @@ def main():
     parser.add_argument("--start", type=str, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", type=str, help="End date (YYYY-MM-DD)")
     parser.add_argument("--skip-profiler", action="store_true", help="Skip signature profiler generation")
+    parser.add_argument("--skip-download", action="store_true", help="Do not attempt to download files, only read from cache")
+    parser.add_argument("--cache-dir", type=str, default="/home/aidea/data_backtest/databento", help="Path to databento cache directory")
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -151,6 +153,7 @@ def main():
         batch_size_seconds=60,
         skip_dom=False,
         skip_profiler=args.skip_profiler,
+        cache_dir=args.cache_dir,
     )
 
     import time
@@ -178,6 +181,7 @@ def main():
                 start=start_dt,
                 end=end_dt,
                 symbol="6J",
+                skip_download=args.skip_download,
                 total_chunks=total_chunks,   # para projeção correta no profiler
             )
         except Exception:

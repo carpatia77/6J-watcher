@@ -194,6 +194,7 @@ class BacktestRunner:
         batch_size_seconds: int = 300,
         skip_dom: bool = False,
         skip_profiler: bool = False,
+        cache_dir: str = "/home/aidea/data_backtest/databento",
     ):
         self.api_key = api_key
         self.db_path = db_path
@@ -202,7 +203,6 @@ class BacktestRunner:
         self.skip_dom = skip_dom
         self.skip_profiler = skip_profiler
 
-        cache_dir    = "/home/aidea/data_backtest/databento"
         self.loader  = DatabentoLoader(api_key, cache_dir=cache_dir)
         self.adapter = DatabentoAdapter(self.loader, batch_size_seconds=batch_size_seconds)
 
@@ -234,6 +234,7 @@ class BacktestRunner:
         symbol: str = "6J",
         skip_download: bool = False,
         total_chunks: int = 1,
+        file_path_override: Optional[str] = None,
     ) -> Dict:
         self.metrics = {
             "total_batches": 0, "total_tape_events": 0, "total_dom_levels": 0,
@@ -247,7 +248,11 @@ class BacktestRunner:
         prof.start_run()
         self.phase_profiler = prof
 
-        file_path = self._resolve_file(start, end, symbol, skip_download)
+        if file_path_override:
+            file_path = Path(file_path_override)
+        else:
+            file_path = self._resolve_file(start, end, symbol, skip_download)
+            
         estimated_batches = _estimate_total_batches(file_path, self.batch_size_seconds)
         label = f"{start.strftime('%b/%Y')}"
 

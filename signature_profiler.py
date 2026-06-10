@@ -71,7 +71,7 @@ class SignatureProfiler:
                 c.price                                AS c_price,
                 COALESCE(MAX(t.price), c.price)        AS max_future_price,
                 COALESCE(MIN(t.price), c.price)        AS min_future_price
-            FROM liquidity_clusters c USING SAMPLE 20000 ROWS
+            FROM liquidity_clusters c TABLESAMPLE RESERVOIR(20000 ROWS)
             LEFT JOIN tape_events t
               ON  c.symbol = t.symbol
               AND (
@@ -79,7 +79,7 @@ class SignatureProfiler:
                      THEN t.timestamp_ns > c.timestamp_ns
                           AND t.timestamp_ns <= c.timestamp_ns + (CASE WHEN c.behavior_signature = 'spoofing_wall' THEN 120000000000 ELSE {horizon_ns} END)
                      ELSE t.timestamp > c.timestamp
-                          AND t.timestamp <= c.timestamp + INTERVAL 1 MINUTE * (CASE WHEN c.behavior_signature = 'spoofing_wall' THEN 2 ELSE {self.horizon_minutes} END)
+                          AND t.timestamp <= c.timestamp + INTERVAL 1 MINUTE * (CASE WHEN c.behavior_signature = 'spoofing_wall' THEN 2 ELSE {horizon_minutes} END)
                 END
               )
             WHERE c.symbol = '{sym_safe}'
