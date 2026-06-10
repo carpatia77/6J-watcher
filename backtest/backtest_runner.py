@@ -198,11 +198,12 @@ class BacktestRunner:
         self.api_key = api_key
         self.db_path = db_path
         self.profile_path = profile_path
+        self.batch_size_seconds = batch_size_seconds
         self.skip_dom = skip_dom
         self.skip_profiler = skip_profiler
-        self.batch_size_seconds = batch_size_seconds
 
-        self.loader  = DatabentoLoader(api_key)
+        cache_dir    = "/home/aidea/data_backtest/databento"
+        self.loader  = DatabentoLoader(api_key, cache_dir=cache_dir)
         self.adapter = DatabentoAdapter(self.loader, batch_size_seconds=batch_size_seconds)
 
         self.cfg = Config()
