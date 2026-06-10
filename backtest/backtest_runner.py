@@ -408,7 +408,7 @@ class BacktestRunner:
                 lookback_days = (end - start).days + 5
                 profile = profiler.build_profile(
                     symbol, lookback_days=lookback_days,
-                    horizon_minutes=30, since=str(start)
+                    horizon_minutes=5, since=str(start)
                 )
                 profiler.save_profile(profile, self.profile_path)
                 t_prof_elapsed = time.perf_counter() - t_prof_start

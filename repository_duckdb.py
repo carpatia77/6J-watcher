@@ -105,6 +105,13 @@ class DuckDBRepository:
             raw_payload        TEXT
         )""")
 
+        self.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tape_ts ON tape_events(symbol, timestamp_ns)
+        """)
+        self.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_cluster_ts ON liquidity_clusters(symbol, timestamp_ns)
+        """)
+
         # Guards para bancos existentes sem as novas colunas
         for tbl, col, typedef in [
             ("tape_events",        "timestamp_ns", "BIGINT"),

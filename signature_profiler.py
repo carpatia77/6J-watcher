@@ -71,7 +71,7 @@ class SignatureProfiler:
                 c.price                                AS c_price,
                 COALESCE(MAX(t.price), c.price)        AS max_future_price,
                 COALESCE(MIN(t.price), c.price)        AS min_future_price
-            FROM liquidity_clusters c
+            FROM liquidity_clusters c USING SAMPLE 20000 ROWS
             LEFT JOIN tape_events t
               ON  c.symbol = t.symbol
               AND (
