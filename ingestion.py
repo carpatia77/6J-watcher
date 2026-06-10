@@ -155,11 +155,12 @@ class IngestionService:
         ORDER BY w_start_ns
         """
 
-        rows = self.repo.conn.execute(sql, {
-            "symbol":    symbol,
-            "batch_id":  batch_id,
-            "bucket_ns": self.cfg.window_ns,
-        }).fetchall()
+        params = {"bucket_ns": self.cfg.window_ns}
+        if tape_rb is None or dom_rb is None:
+            params["symbol"] = symbol
+            params["batch_id"] = batch_id
+
+        rows = self.repo.conn.execute(sql, params).fetchall()
 
         if tape_rb is not None:
             self.repo.conn.unregister("_tape_view")
