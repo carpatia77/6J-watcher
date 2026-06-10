@@ -113,7 +113,8 @@ class DatabentoAdapter:
                 # (antes era pulado silenciosamente após o _clear)
 
             action = getattr(record, "action", None)
-            if getattr(action, "value", action) == 84:  # ACTION_TRADE
+            action_val = getattr(action, "value", action)
+            if action_val in ('T', '84', 84):  # ACTION_TRADE
                 size = getattr(record, "size", 0)
                 if size > 0:
                     side_char = str(getattr(record, "side", "N")).upper()
