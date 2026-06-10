@@ -53,29 +53,32 @@ class DatabentoAdapter:
             )
 
         tape_bufs: dict = {
-            "timestamp_ns": [], "timestamp": [], "price": [],
+            "timestamp_ns": [], "price": [],
             "volume": [],       "side": [],
         }
         dom_bufs: dict = {
-            "timestamp_ns": [], "timestamp": [], "price": [],
+            "timestamp_ns": [], "price": [],
             "level_index": [],  "bid_volume": [], "ask_volume": [],
         }
         batch_start_ns = None
 
-        def _flush_arrow(tape_b: dict, dom_b: dict):
+        def _flush_arrow(tape_b: dict, dom_b: dict) -> Tuple[pa.RecordBatch, pa.RecordBatch]:
+            tape_ns = pa.array(tape_b["timestamp_ns"], type=pa.int64())
             tape_rb = pa.record_batch(
                 {
-                    "timestamp_ns": pa.array(tape_b["timestamp_ns"], type=pa.int64()),
-                    "timestamp":    pa.array(tape_b["timestamp"],    type=pa.string()),
+                    "timestamp_ns": tape_ns,
+                    "timestamp":    tape_ns.cast(pa.timestamp('ns', tz='UTC')).cast(pa.string()),
                     "price":        pa.array(tape_b["price"],        type=pa.float64()),
                     "volume":       pa.array(tape_b["volume"],       type=pa.int32()),
                     "side":         pa.array(tape_b["side"],         type=pa.string()),
                 }
             )
+            
+            dom_ns = pa.array(dom_b["timestamp_ns"], type=pa.int64())
             dom_rb = pa.record_batch(
                 {
-                    "timestamp_ns": pa.array(dom_b["timestamp_ns"], type=pa.int64()),
-                    "timestamp":    pa.array(dom_b["timestamp"],    type=pa.string()),
+                    "timestamp_ns": dom_ns,
+                    "timestamp":    dom_ns.cast(pa.timestamp('ns', tz='UTC')).cast(pa.string()),
                     "price":        pa.array(dom_b["price"],        type=pa.float64()),
                     "level_index":  pa.array(dom_b["level_index"],  type=pa.int32()),
                     "bid_volume":   pa.array(dom_b["bid_volume"],   type=pa.int32()),
@@ -112,7 +115,6 @@ class DatabentoAdapter:
             tape_event = self.reconstructor.extract_tape_event(record)
             if tape_event:
                 tape_bufs["timestamp_ns"].append(tape_event.get("timestamp_ns"))
-                tape_bufs["timestamp"].append(tape_event["timestamp"])
                 tape_bufs["price"].append(tape_event["price"])
                 tape_bufs["volume"].append(tape_event["volume"])
                 tape_bufs["side"].append(tape_event["side"])
@@ -122,7 +124,6 @@ class DatabentoAdapter:
                 if snapshot:
                     for row in snapshot.to_dom_rows():
                         dom_bufs["timestamp_ns"].append(row.get("timestamp_ns"))
-                        dom_bufs["timestamp"].append(row["timestamp"])
                         dom_bufs["price"].append(row["price"])
                         dom_bufs["level_index"].append(row["level_index"])
                         dom_bufs["bid_volume"].append(row["bid_volume"])

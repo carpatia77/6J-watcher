@@ -22,10 +22,10 @@ class BookSnapshot:
     def to_dom_rows(self) -> List[Dict]:
         """
         Emite rows compatíveis com parse_dom_rows().
-        Inclui timestamp_ns (BIGINT) além do timestamp string para JOIN rápido no DuckDB.
+        Inclui timestamp_ns (BIGINT). O timestamp string foi otimizado (Arrow C++ cuidara disso).
         """
         rows = []
-        ts = self.timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")
+        ts = ""
         for lv in self.bid_levels:
             rows.append({
                 "timestamp":    ts,
@@ -65,7 +65,7 @@ class BookReconstructor:
             return None
 
         ts_ns = record.ts_event
-        ts = datetime.fromtimestamp(ts_ns / 1e9, timezone.utc)
+        ts = None
 
         # Determina se é trade para decidir se last_price é confiável
         action = getattr(record, "action", None)
@@ -98,7 +98,6 @@ class BookReconstructor:
             return None
 
         ts_ns = record.ts_event
-        ts = datetime.fromtimestamp(ts_ns / 1e9, timezone.utc)
         price = record.price / FIXED_POINT
         size = getattr(record, "size", 0)
         if size == 0:
@@ -113,7 +112,7 @@ class BookReconstructor:
             return None
 
         return {
-            "timestamp":    ts.strftime("%Y-%m-%dT%H:%M:%S.%f"),
+            "timestamp":    "",
             "timestamp_ns": ts_ns,
             "price":        price,
             "volume":       size,
