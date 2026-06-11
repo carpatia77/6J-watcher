@@ -6,11 +6,15 @@ def build_mfe_mae_cte(
     horizon_spoofing_minutes: int = 2,
     is_sampling: bool = False,
     sample_size: int = 20000,
-    filter_dates: list = None
+    filter_dates: list = None,
+    target_ticks: int = 10,
+    stop_ticks: int = 5,
+    tick_size: float = 0.000005
 ) -> str:
     """
     Constrói apenas a parte da CTE (até 'scored') para cálculo direcional de MFE e MAE.
     Pode ser estendida pelo profiler com GROUP BYs customizados.
+    Inclui cálculo de Win Rate Path-Dependent (ordem cronológica de Target vs Stop).
     """
     date_filter = ""
     if start_date and end_date:
@@ -63,6 +67,13 @@ def build_mfe_mae_cte(
             c.price                                AS c_price,
             COALESCE(MAX(t.price), c.price)        AS max_future_price,
             COALESCE(MIN(t.price), c.price)        AS min_future_price,
+            
+            -- Path-dependent timestamps
+            MIN(t.timestamp_ns) FILTER (WHERE t.price >= c.price + ({target_ticks} * {tick_size})) AS ts_bull_target,
+            MIN(t.timestamp_ns) FILTER (WHERE t.price <= c.price - ({stop_ticks} * {tick_size})) AS ts_bull_stop,
+            MIN(t.timestamp_ns) FILTER (WHERE t.price <= c.price - ({target_ticks} * {tick_size})) AS ts_bear_target,
+            MIN(t.timestamp_ns) FILTER (WHERE t.price >= c.price + ({stop_ticks} * {tick_size})) AS ts_bear_stop,
+            
             CASE 
                 WHEN ABS(c.price_slope_4h) > 0.000010 THEN 'TRENDING'
                 ELSE 'RANGING'
@@ -95,14 +106,30 @@ def build_mfe_mae_cte(
                 WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_bid > total_ask THEN c_price - min_future_price
                 WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_ask > total_bid THEN max_future_price - c_price
                 ELSE GREATEST(max_future_price - c_price, c_price - min_future_price)
-            END AS mae
+            END AS mae,
+            CASE
+                WHEN behavior_signature IN ('iceberg_accumulation', 'breakout_genuine', 'defense_line') 
+                     OR (behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_bid > total_ask) THEN
+                     CASE 
+                         WHEN ts_bull_target IS NOT NULL AND (ts_bull_stop IS NULL OR ts_bull_target < ts_bull_stop) THEN 1
+                         ELSE 0
+                     END
+                WHEN behavior_signature IN ('iceberg_distribution', 'absorption_passive') 
+                     OR (behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_ask > total_bid) THEN
+                     CASE 
+                         WHEN ts_bear_target IS NOT NULL AND (ts_bear_stop IS NULL OR ts_bear_target < ts_bear_stop) THEN 1
+                         ELSE 0
+                     END
+                ELSE 0
+            END AS path_win
         FROM cluster_excursions
     ),
     scored AS (
         SELECT *,
-            CASE WHEN mfe > mae AND mfe > 0 THEN 1 ELSE 0 END AS win,
-            CASE WHEN mfe > mae AND mfe > 0 THEN mfe ELSE 0 END AS gross_profit,
-            CASE WHEN mae > mfe THEN mae ELSE 0 END AS gross_loss
+            path_win AS win,
+            -- Se atingiu o alvo primeiro, considera gross_profit cheio. Caso contrário considera loss.
+            CASE WHEN path_win = 1 THEN {target_ticks} ELSE 0 END AS gross_profit,
+            CASE WHEN path_win = 0 THEN {stop_ticks} ELSE 0 END AS gross_loss
         FROM mfe_mae_calc
     )"""
 

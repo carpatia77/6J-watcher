@@ -238,14 +238,20 @@ class AdaptivePatternEngine:
         self,
         signature: Union["BehaviorSignature", str],
         session: str,
+        regime: str = "RANGING"
     ) -> dict:
         """
         Retorna a expectativa matemática do sinal baseada no backtest.
         Aceita BehaviorSignature ou str (ex: chamadas vindas de hotspots()).
         """
         sig_key = signature if isinstance(signature, str) else signature.value
-        key     = f"{sig_key}_{session}"
+        key     = f"{sig_key}_{regime}_{session}"
         stats   = self.profile.get("signatures", {}).get(key, {})
+
+        if not stats:
+            # Fallback para profile legado sem regime
+            key = f"{sig_key}_{session}"
+            stats = self.profile.get("signatures", {}).get(key, {})
 
         tier = (
             1 if sig_key in self.TIER_1 else
