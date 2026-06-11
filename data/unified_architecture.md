@@ -25,3 +25,19 @@ A arquitetura de *Alpha* do robÃ´ passa a ser sequencial:
 Porque a absorÃ§Ã£o passiva valida no livro de ofertas que os institucionais de fato entraram na direÃ§Ã£o da agulhada macro. O robÃ´ nÃ£o entra de peito aberto no Didi; ele entra no nÃ­vel do tick exato onde o institucional absorveu o varejo. Se a agulhada for falsa, o gatilho micro nÃ£o dispara. Se for real, o *stop-loss* estrutural de 8 ticks provido pela Camada 1 protegerÃ¡ o capital, enquanto o alvo macro da agulhada pagarÃ¡ 40 a 80 ticks.
 
 Isso isola o MFE extremo e elimina as 4.539 ocorrÃªncias que eram ruÃ­do transacional.
+
+## 4. Otimização Paramétrica de Estratégias (Ex: Agulhada do Didi)
+O Motor Quantitativo agora é uma esteira de testes contínua, suportando testes com alvos e stops variados via Path-Dependence.
+
+Se você quiser validar estatisticamente uma **Agulhada do Didi** direcional no banco inteiro:
+
+1. **Geração do Sinal (Camada 1)**: As médias de 3, 8 e 20 seriam computadas via window functions durante a ingestão do cluster, e o trigger geraria a assinatura \ehavior_signature = 'agulhada_didi_bullish'\.
+2. **Validação R:R Dinâmica**: Você ajusta a consulta dinamicamente:
+   `python
+   query = build_mfe_mae_query(
+       signature='agulhada_didi_bullish',
+       target_ticks=30,  # Agulhadas buscam alvos longos
+       stop_ticks=10     # Stop estrutural
+   )
+   ``n3. **Métrica Cega**: A CTE processará as dezenas de milhões de eventos e medirá _cronologicamente_ quem foi atingido primeiro (Target vs Stop). O Profit Factor Path-Dependent retornará a rentabilidade tradable do setup em milissegundos.
+
