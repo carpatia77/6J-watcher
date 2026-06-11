@@ -18,7 +18,9 @@ if _env_path.exists():
 class Config:
     symbol:          str   = "6J"
     tick_size:       float = 0.00005
-    db_path:         str   = str(BASE_DIR / "output" / "6j_liquidity.db")
+    data_dir:        str   = field(default_factory=lambda: os.environ.get("DATA_DIR", "/home/aidea/data_backtest"))
+    db_path:         str   = field(default_factory=lambda: os.environ.get("DB_PATH", "/home/aidea/data_backtest/backtest_8months.db"))
+    cache_dir:       str   = field(default_factory=lambda: os.environ.get("CACHE_DIR", "/home/aidea/data_backtest/databento"))
     host:            str   = "127.0.0.1"
     port:            int   = 8765
     min_occurrences: int   = 3

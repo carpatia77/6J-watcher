@@ -56,102 +56,21 @@ class SignatureProfiler:
             dates_str = ",".join([f"'{str(d).replace(chr(39), '')}' " for d in filter_dates])
             filter_clause = f"AND CAST(c.timestamp AS DATE) IN ({dates_str})"
 
-        full_query = f"""
-        WITH full_clusters AS (
-            SELECT *,
-                (AVG(price) OVER (
-                    PARTITION BY symbol 
-                    ORDER BY timestamp_ns 
-                    ROWS BETWEEN 2000 PRECEDING AND CURRENT ROW)
-                - AVG(price) OVER (
-                    PARTITION BY symbol 
-                    ORDER BY timestamp_ns 
-                    ROWS BETWEEN 4000 PRECEDING AND 2001 PRECEDING)
-                ) AS price_slope_4h
-            FROM liquidity_clusters
-            WHERE symbol = '{sym_safe}' AND timestamp > '{cutoff_safe}' {filter_clause}
-        ),
-        sampled AS (
-            SELECT * FROM full_clusters 
-            TABLESAMPLE RESERVOIR(20000 ROWS)
-        ),
-        cluster_excursions AS (
-            SELECT
-                c.timestamp,
-                c.timestamp_ns,
-                c.behavior_signature,
-                c.session,
-                (c.total_bid + c.total_ask)            AS total_vol,
-                c.total_bid,
-                c.total_ask,
-                c.cumdelta,
-                ABS(c.total_bid - c.total_ask)         AS imbalance,
-                c.price                                AS c_price,
-                COALESCE(MAX(t.price), c.price)        AS max_future_price,
-                COALESCE(MIN(t.price), c.price)        AS min_future_price,
-                CASE 
-                    WHEN ABS(c.price_slope_4h) > 0.000010 THEN 'TRENDING'
-                    ELSE 'RANGING'
-                END AS regime
-            FROM sampled c
-            LEFT JOIN tape_events t
-              ON  c.symbol = t.symbol
-              AND (
-                CASE WHEN c.timestamp_ns IS NOT NULL AND t.timestamp_ns IS NOT NULL
-                     THEN t.timestamp_ns > c.timestamp_ns
-                          AND t.timestamp_ns <= c.timestamp_ns + (CASE WHEN c.behavior_signature = 'spoofing_wall' THEN 120000000000 ELSE {horizon_ns} END)
-                     ELSE t.timestamp > c.timestamp
-                          AND t.timestamp <= c.timestamp + INTERVAL 1 MINUTE * (CASE WHEN c.behavior_signature = 'spoofing_wall' THEN 2 ELSE {horizon_minutes} END)
-                END
-              )
-            WHERE c.symbol = '{sym_safe}'
-              AND c.timestamp > '{cutoff_safe}'
-              {filter_clause}
-            GROUP BY c.timestamp, c.timestamp_ns, c.behavior_signature, c.session,
-                     c.total_bid, c.total_ask, c.cumdelta, c.price, c.price_slope_4h
-        ),
-        mfe_mae_calc AS (
-            SELECT *,
-                -- P3: cada assinatura mapeada para sua direção esperada.
-                -- DEFENSE_LINE estava incorretamente no ELSE (bearish) antes deste fix.
-                -- spoofing_wall e liquidity_vacuum são neutros: usa excursão máxima.
-                CASE
-                    WHEN behavior_signature IN (
-                        'iceberg_accumulation', 'breakout_genuine', 'defense_line'
-                    ) THEN max_future_price - c_price
-                    WHEN behavior_signature IN (
-                        'iceberg_distribution', 'absorption_passive'
-                    ) THEN c_price - min_future_price
-                    WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_bid > total_ask THEN max_future_price - c_price
-                    WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_ask > total_bid THEN c_price - min_future_price
-                    ELSE GREATEST(
-                        max_future_price - c_price,
-                        c_price - min_future_price
-                    )
-                END AS mfe,
-                CASE
-                    WHEN behavior_signature IN (
-                        'iceberg_accumulation', 'breakout_genuine', 'defense_line'
-                    ) THEN c_price - min_future_price
-                    WHEN behavior_signature IN (
-                        'iceberg_distribution', 'absorption_passive'
-                    ) THEN max_future_price - c_price
-                    WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_bid > total_ask THEN c_price - min_future_price
-                    WHEN behavior_signature IN ('spoofing_wall', 'liquidity_vacuum') AND total_ask > total_bid THEN max_future_price - c_price
-                    ELSE GREATEST(
-                        max_future_price - c_price,
-                        c_price - min_future_price
-                    )
-                END AS mae
-            FROM cluster_excursions
-        ),
-        scored AS (
-            SELECT *,
-                CASE WHEN mfe > mae AND mfe > 0 THEN 1 ELSE 0 END AS win,
-                CASE WHEN mfe > mae AND mfe > 0 THEN mfe ELSE 0 END AS gross_profit,
-                CASE WHEN mae > mfe THEN mae ELSE 0 END AS gross_loss
-            FROM mfe_mae_calc
-        ),
+        from queries import build_mfe_mae_cte
+        
+        # O signature_profiler precisa da tabela 'scored', entao chamamos build_mfe_mae_cte
+        # que ja retorna exatamente ate a CTE 'scored'.
+        base_cte = build_mfe_mae_cte(
+            symbol=sym_safe,
+            start_date=cutoff_safe,
+            horizon_minutes=horizon_minutes,
+            is_sampling=True,
+            sample_size=20000,
+            filter_dates=filter_dates
+        )
+
+        full_query = base_cte + f"""
+        ,
         sig_stats AS (
             SELECT
                 behavior_signature || '_' || regime AS behavior_signature,

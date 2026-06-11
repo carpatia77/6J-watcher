@@ -392,7 +392,7 @@ class IngestionService:
                     w_start_ns    = e_ns
                     w_first_price = e.price
                     w_ts          = e.timestamp
-                elif e_ns - w_start_ns >= _WINDOW_NS:
+                elif e_ns - w_start_ns >= self.cfg.window_ns:
                     _flush(e_ns - 1)
                     w_start_ns    = e_ns
                     w_first_price = e.price

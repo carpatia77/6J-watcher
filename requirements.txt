@@ -9,3 +9,8 @@ python-multipart
 streamlit
 streamlit-autorefresh
 requests
+databento
+httpx
+tqdm
+pytest
+matplotlib

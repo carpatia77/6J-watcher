@@ -34,18 +34,19 @@ class DuckDBRepository:
         self.conn.execute("BEGIN TRANSACTION")
 
     def commit(self):
-        """Commit da transação. Silencioso se não houver transação ativa."""
+        """Commit da transação."""
         try:
             self.conn.execute("COMMIT")
         except Exception:
-            pass
+            self.conn.execute("ROLLBACK")
+            raise
 
     def rollback(self):
-        """Rollback da transação. Silencioso se não houver transação ativa."""
+        """Rollback da transação."""
         try:
             self.conn.execute("ROLLBACK")
         except Exception:
-            pass
+            raise
 
     def close(self):
         """Fecha conexão e libera file lock (crítico no Windows)."""
@@ -53,7 +54,7 @@ class DuckDBRepository:
             self.conn.execute("CHECKPOINT")
             self.conn.close()
         except Exception:
-            pass
+            raise
 
     def __enter__(self):
         return self
