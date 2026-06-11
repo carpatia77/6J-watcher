@@ -16,9 +16,9 @@ query = """
         deltamax,
         behavior_signature
     FROM liquidity_clusters 
-    WHERE timestamp >= '2025-11-15'
+    WHERE timestamp >= '2025-12-10'
     ORDER BY timestamp_ns
-    LIMIT 500
+    LIMIT 800
 """
 
 rows = con.execute(query).fetchall()
