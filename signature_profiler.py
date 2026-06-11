@@ -57,7 +57,25 @@ class SignatureProfiler:
             filter_clause = f"AND CAST(c.timestamp AS DATE) IN ({dates_str})"
 
         full_query = f"""
-        WITH cluster_excursions AS (
+        WITH full_clusters AS (
+            SELECT *,
+                (AVG(price) OVER (
+                    PARTITION BY symbol 
+                    ORDER BY timestamp_ns 
+                    ROWS BETWEEN 2000 PRECEDING AND CURRENT ROW)
+                - AVG(price) OVER (
+                    PARTITION BY symbol 
+                    ORDER BY timestamp_ns 
+                    ROWS BETWEEN 4000 PRECEDING AND 2001 PRECEDING)
+                ) AS price_slope_4h
+            FROM liquidity_clusters
+            WHERE symbol = '{sym_safe}' AND timestamp > '{cutoff_safe}' {filter_clause}
+        ),
+        sampled AS (
+            SELECT * FROM full_clusters 
+            TABLESAMPLE RESERVOIR(20000 ROWS)
+        ),
+        cluster_excursions AS (
             SELECT
                 c.timestamp,
                 c.timestamp_ns,
@@ -70,8 +88,12 @@ class SignatureProfiler:
                 ABS(c.total_bid - c.total_ask)         AS imbalance,
                 c.price                                AS c_price,
                 COALESCE(MAX(t.price), c.price)        AS max_future_price,
-                COALESCE(MIN(t.price), c.price)        AS min_future_price
-            FROM liquidity_clusters c TABLESAMPLE RESERVOIR(20000 ROWS)
+                COALESCE(MIN(t.price), c.price)        AS min_future_price,
+                CASE 
+                    WHEN ABS(c.price_slope_4h) > 0.000010 THEN 'TRENDING'
+                    ELSE 'RANGING'
+                END AS regime
+            FROM sampled c
             LEFT JOIN tape_events t
               ON  c.symbol = t.symbol
               AND (
@@ -86,7 +108,7 @@ class SignatureProfiler:
               AND c.timestamp > '{cutoff_safe}'
               {filter_clause}
             GROUP BY c.timestamp, c.timestamp_ns, c.behavior_signature, c.session,
-                     c.total_bid, c.total_ask, c.cumdelta, c.price
+                     c.total_bid, c.total_ask, c.cumdelta, c.price, c.price_slope_4h
         ),
         mfe_mae_calc AS (
             SELECT *,
@@ -132,15 +154,16 @@ class SignatureProfiler:
         ),
         sig_stats AS (
             SELECT
-                behavior_signature,
+                behavior_signature || '_' || regime AS behavior_signature,
                 session,
                 COUNT(*)           AS cluster_count,
                 SUM(win)           AS wins,
                 SUM(gross_profit)  AS total_gross_profit,
                 SUM(gross_loss)    AS total_gross_loss,
-                AVG(mfe)           AS avg_mfe
+                AVG(mfe)           AS avg_mfe,
+                AVG(mae)           AS avg_mae
             FROM scored
-            GROUP BY behavior_signature, session
+            GROUP BY behavior_signature || '_' || regime, session
         ),
         perc_stats AS (
             SELECT
@@ -161,9 +184,11 @@ class SignatureProfiler:
         )
         SELECT
             'sig'                  AS result_type,
-            behavior_signature,    session,
+            behavior_signature,    
+            session,
             cluster_count,         wins,
-            total_gross_profit,    total_gross_loss,  avg_mfe,
+            total_gross_profit,    total_gross_loss,  
+            avg_mfe, avg_mae,
             NULL::DOUBLE           AS session_count,
             NULL::DOUBLE AS vol_p50, NULL::DOUBLE AS vol_p75, NULL::DOUBLE AS vol_p90,
             NULL::DOUBLE AS vol_p95, NULL::DOUBLE AS vol_p99,
@@ -176,7 +201,7 @@ class SignatureProfiler:
             NULL                   AS behavior_signature,  session,
             NULL::BIGINT           AS cluster_count,       NULL::BIGINT AS wins,
             NULL::DOUBLE           AS total_gross_profit,  NULL::DOUBLE AS total_gross_loss,
-            NULL::DOUBLE           AS avg_mfe,
+            NULL::DOUBLE           AS avg_mfe,             NULL::DOUBLE AS avg_mae,
             session_count,
             vol_p50, vol_p75, vol_p90, vol_p95, vol_p99,
             imb_p50, imb_p75, imb_p90, imb_p95, imb_p99
@@ -255,6 +280,11 @@ class SignatureProfiler:
                 if gross_loss > 1e-10
                 else float('inf')
             )
+            
+            # Skip statistically insignificant signatures
+            if count < 30:
+                continue
+                
             profile["signatures"][f"{sig}_{sess}"] = {
                 "count":         int(count),
                 "win_rate":      round(wins / count, 3),
