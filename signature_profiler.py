@@ -125,9 +125,9 @@ class SignatureProfiler:
         ),
         scored AS (
             SELECT *,
-                CASE WHEN mfe > ABS(mae) AND mfe > 0 THEN 1 ELSE 0 END AS win,
-                CASE WHEN mfe > 0   THEN mfe      ELSE 0 END           AS gross_profit,
-                CASE WHEN mae < 0   THEN ABS(mae) ELSE 0 END           AS gross_loss
+                CASE WHEN mfe > mae AND mfe > 0 THEN 1 ELSE 0 END AS win,
+                CASE WHEN mfe > mae AND mfe > 0 THEN mfe ELSE 0 END AS gross_profit,
+                CASE WHEN mae > mfe THEN mae ELSE 0 END AS gross_loss
             FROM mfe_mae_calc
         ),
         sig_stats AS (
@@ -248,12 +248,17 @@ class SignatureProfiler:
                 continue
             wins         = row["wins"] or 0
             gross_profit = row["total_gross_profit"] or 0
-            gross_loss   = row["total_gross_loss"]   or 0
-            pf = (gross_profit / gross_loss) if gross_loss and gross_loss > 0 else float("inf")
+            gross_loss = float(row["total_gross_loss"] or 0)
+            
+            profit_factor = (
+                gross_profit / gross_loss
+                if gross_loss > 1e-10
+                else float('inf')
+            )
             profile["signatures"][f"{sig}_{sess}"] = {
                 "count":         int(count),
                 "win_rate":      round(wins / count, 3),
-                "profit_factor": round(pf, 2),
+                "profit_factor": round(profit_factor, 2),
                 "avg_mfe":       round(row["avg_mfe"] or 0, 7),
             }
 
