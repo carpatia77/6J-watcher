@@ -26,6 +26,7 @@ def compare_models(baseline_db: str, bazooka_db: str):
         WHERE behavior_signature = 'absorption_passive'
           AND session = 'LONDON'
           AND timestamp >= '2026-01-01'
+          AND timestamp <  '2026-02-01'  -- Trava exclusiva de Janeiro para preview
     )
     SELECT
         COUNT(*) as total_samples,
@@ -50,8 +51,15 @@ def compare_models(baseline_db: str, bazooka_db: str):
         df_baz = conn_baz.execute(query).fetchdf()
         conn_baz.close()
     except Exception as e:
-        print(f"Erro ao ler Bazooka: {e}")
-        df_baz = None
+        print(f"Erro no bazooka_db ({bazooka_db}). Tentando ler do arquivo em andamento...")
+        try:
+            # Fallback para o arquivo ativo
+            conn_baz = duckdb.connect("/home/aidea/data_backtest/backtest_8months.db", read_only=True)
+            df_baz = conn_baz.execute(query).fetchdf()
+            conn_baz.close()
+        except Exception as e2:
+            print(f"Erro ao ler banco em andamento: {e2}")
+            df_baz = None
 
     if df_base is not None and not df_base.empty:
         base_samples = df_base['total_samples'][0]
