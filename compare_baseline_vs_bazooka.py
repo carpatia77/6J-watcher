@@ -26,7 +26,7 @@ def compare_models(baseline_db: str, bazooka_db: str):
         WHERE behavior_signature = 'absorption_passive'
           AND session = 'LONDON'
           AND timestamp >= '2026-01-01'
-          AND timestamp <  '2026-02-01'  -- Trava exclusiva de Janeiro para preview
+          AND timestamp <  '2026-04-01'  -- Preview do 1º Trimestre (Jan, Fev, Mar)
     )
     SELECT
         COUNT(*) as total_samples,
@@ -47,33 +47,13 @@ def compare_models(baseline_db: str, bazooka_db: str):
 
     print("\n[2] Lendo Nova Modelagem Bazooka (ASOF Dinâmico, N=10)...")
     try:
-        conn_baz = duckdb.connect(bazooka_db, read_only=True)
+        # Como o backtester está pausado, o arquivo está livre de Write Locks!
+        conn_baz = duckdb.connect("/home/aidea/data_backtest/backtest_8months.db", read_only=True)
         df_baz = conn_baz.execute(query).fetchdf()
         conn_baz.close()
     except Exception as e:
-        print(f"Erro no bazooka_db ({bazooka_db}). Tentando ler do arquivo em andamento...")
-        try:
-            # Fallback para o arquivo ativo
-            conn_baz = duckdb.connect("/home/aidea/data_backtest/backtest_8months.db", read_only=True)
-            df_baz = conn_baz.execute(query).fetchdf()
-            conn_baz.close()
-        except Exception as e2:
-            print(f"Banco trancado pelo escritor principal (lock). Extraindo via cópia suja...")
-            try:
-                import shutil
-                import os
-                src_db = "/home/aidea/data_backtest/backtest_8months.db"
-                tmp_db = "/home/aidea/data_backtest/backtest_preview.db"
-                shutil.copy(src_db, tmp_db)
-                if os.path.exists(src_db + ".wal"):
-                    shutil.copy(src_db + ".wal", tmp_db + ".wal")
-                
-                conn_baz = duckdb.connect(tmp_db, read_only=True)
-                df_baz = conn_baz.execute(query).fetchdf()
-                conn_baz.close()
-            except Exception as e3:
-                print(f"Erro na cópia suja: {e3}")
-                df_baz = None
+        print(f"Erro ao ler banco em andamento: {e}")
+        df_baz = None
 
     if df_base is not None and not df_base.empty:
         base_samples = df_base['total_samples'][0]
