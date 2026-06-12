@@ -131,9 +131,9 @@ class IngestionService:
             GROUP BY bucket_id
         ),
         dom_snapshots AS (
-            SELECT symbol, timestamp_ns 
+            SELECT '{symbol}' AS symbol, timestamp_ns 
             FROM {dom_source} 
-            GROUP BY symbol, timestamp_ns
+            GROUP BY timestamp_ns
         ),
         windowed_with_dom_ts AS (
             SELECT w.*, d.timestamp_ns AS dom_ts
