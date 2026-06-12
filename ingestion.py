@@ -139,8 +139,7 @@ class IngestionService:
             SELECT w.*, d.timestamp_ns AS dom_ts
             FROM windowed w
             ASOF LEFT JOIN dom_snapshots d
-                ON  w.symbol = d.symbol
-                AND d.timestamp_ns <= w.w_end_ns
+                ON  d.timestamp_ns <= w.w_end_ns
         ),
         dom_joined AS (
             SELECT
@@ -159,8 +158,7 @@ class IngestionService:
                 COALESCE(MIN(d.level_index), 9) AS dom_min_level
             FROM windowed_with_dom_ts w
             LEFT JOIN {dom_source} d
-                ON  d.symbol = w.symbol
-                AND d.timestamp_ns = w.dom_ts
+                ON  d.timestamp_ns = w.dom_ts
                 AND d.price >= w.last_price - ($tick_size * 10)
                 AND d.price <= w.last_price + ($tick_size * 10)
             GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
