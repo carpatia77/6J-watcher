@@ -279,7 +279,8 @@ class BacktestRunner:
 
         batch_id_counter = 0
         tape_accumulator = []
-        dom_accumulator = []
+        dom_accumulator  = []
+        cluster_accumulator = []  # ← FIX: clusters gerados in-memory precisam ser persistidos
 
         def _flush_accumulators():
             if tape_accumulator or dom_accumulator:
@@ -300,6 +301,17 @@ class BacktestRunner:
                 prof.record("persist", time.perf_counter() - t0_flush)
                 tape_accumulator.clear()
                 dom_accumulator.clear()
+
+                # ← FIX: persiste clusters acumulados
+                if cluster_accumulator:
+                    self.repo.begin()
+                    try:
+                        self.repo.insert_clusters(cluster_accumulator)
+                        self.repo.commit()
+                    except Exception:
+                        self.repo.rollback()
+                        raise
+                    cluster_accumulator.clear()
 
         while True:
             t0_stream = time.perf_counter()
@@ -332,6 +344,10 @@ class BacktestRunner:
                     dom_rb = dom_rb.append_column("symbol", pa.array([symbol] * n_dom, type=pa.string()))
                     dom_rb = dom_rb.append_column("batch_id", pa.array([batch_id] * n_dom, type=pa.string()))
                     dom_accumulator.append(dom_rb)
+
+                # ← FIX: acumula clusters para flush posterior
+                if clusters:
+                    cluster_accumulator.extend(clusters)
 
                 # Limita a represa em ~500.000 linhas de DOM para economizar RAM (WSL com 6GB)
                 total_dom_rows = sum(rb.num_rows for rb in dom_accumulator)
