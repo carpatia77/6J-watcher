@@ -37,9 +37,8 @@ CHUNKS = [
     # (date(2026, 1, 1),   date(2026, 1, 31)), # PROCESSADO (Salvo Fase 1)
     # (date(2026, 2, 1),   date(2026, 2, 28)), # PROCESSADO (Salvo Fase 1)
     # (date(2026, 3, 1),   date(2026, 3, 31)), # PROCESSADO (Salvo Fase 1)
-    (date(2026, 4, 1),   date(2026, 4, 30)),
-    (date(2026, 5, 1),   date(2026, 5, 31)),
-    (date(2026, 6, 1),   date(2026, 6, 5)),
+    # (date(2026, 4, 1),   date(2026, 4, 30)), # PROCESSADO (Fase 2 Abril)
+    (date(2026, 5, 1),   date(2026, 6, 5)),    # FINAL: O arquivo baixado contém Maio e os 5 dias de Junho juntos!
 ]
 
 TOTAL_CHUNKS = len(CHUNKS)
