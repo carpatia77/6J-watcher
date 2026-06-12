@@ -31,22 +31,31 @@ class DuckDBRepository:
         self._init_schema()
 
     def begin(self):
-        self.conn.execute("BEGIN TRANSACTION")
+        """Inicia transação apenas se não houver uma ativa."""
+        if not self.conn.in_transaction():
+            self.conn.execute("BEGIN TRANSACTION")
 
     def commit(self):
-        """Commit da transação."""
+        """Commit da transação — no-op se não houver transação ativa."""
+        if not self.conn.in_transaction():
+            return
         try:
             self.conn.execute("COMMIT")
         except Exception:
-            self.conn.execute("ROLLBACK")
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
             raise
 
     def rollback(self):
-        """Rollback da transação."""
+        """Rollback da transação — no-op se não houver transação ativa."""
+        if not self.conn.in_transaction():
+            return
         try:
             self.conn.execute("ROLLBACK")
         except Exception:
-            raise
+            pass
 
     def close(self):
         """Fecha conexão e libera file lock (crítico no Windows)."""
