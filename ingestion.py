@@ -116,6 +116,7 @@ class IngestionService:
         windowed AS (
             SELECT
                 bucket_id,
+                MAX('{symbol}') AS symbol,
                 MIN(timestamp)                                     AS w_timestamp,
                 MIN(timestamp_ns)                                  AS w_start_ns,
                 MAX(timestamp_ns)                                  AS w_end_ns,
@@ -129,15 +130,40 @@ class IngestionService:
             FROM running_calcs
             GROUP BY bucket_id
         ),
+        dom_snapshots AS (
+            SELECT symbol, timestamp_ns 
+            FROM {dom_source} 
+            GROUP BY symbol, timestamp_ns
+        ),
+        windowed_with_dom_ts AS (
+            SELECT w.*, d.timestamp_ns AS dom_ts
+            FROM windowed w
+            ASOF LEFT JOIN dom_snapshots d
+                ON  w.symbol = d.symbol
+                AND d.timestamp_ns <= w.w_end_ns
+        ),
         dom_joined AS (
             SELECT
-                w.*,
-                COALESCE(d.bid_volume, 0) AS dom_bid,
-                COALESCE(d.ask_volume, 0) AS dom_ask
-            FROM windowed w
-            ASOF LEFT JOIN {dom_source} d
-                ON  d.price        = w.last_price
-                AND d.timestamp_ns <= w.w_end_ns
+                w.bucket_id,
+                w.w_timestamp,
+                w.w_start_ns,
+                w.first_price,
+                w.last_price,
+                w.total_bid,
+                w.total_ask,
+                w.cumdelta,
+                w.deltamin,
+                w.deltamax,
+                COALESCE(SUM(d.bid_volume), 0) AS dom_bid,
+                COALESCE(SUM(d.ask_volume), 0) AS dom_ask,
+                COALESCE(MIN(d.level_index), 9) AS dom_min_level
+            FROM windowed_with_dom_ts w
+            LEFT JOIN {dom_source} d
+                ON  d.symbol = w.symbol
+                AND d.timestamp_ns = w.dom_ts
+                AND d.price >= w.last_price - ($tick_size * 10)
+                AND d.price <= w.last_price + ($tick_size * 10)
+            GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
         )
         SELECT
             w_timestamp,
@@ -150,12 +176,16 @@ class IngestionService:
             deltamin,
             deltamax,
             dom_bid,
-            dom_ask
+            dom_ask,
+            dom_min_level
         FROM dom_joined
         ORDER BY w_start_ns
         """
 
-        params = {"bucket_ns": self.cfg.window_ns}
+        params = {
+            "bucket_ns": self.cfg.window_ns,
+            "tick_size": self.cfg.tick_size
+        }
         if tape_rb is None or dom_rb is None:
             params["symbol"] = symbol
             params["batch_id"] = batch_id
@@ -175,7 +205,7 @@ class IngestionService:
             (
                 w_ts, w_start_ns, first_price, last_price,
                 total_bid, total_ask, cumdelta, deltamin, deltamax,
-                dom_bid, dom_ask
+                dom_bid, dom_ask, dom_min_level
             ) = row
 
             # w_ts pode chegar como string (DuckDB → Python) ou datetime
@@ -201,58 +231,22 @@ class IngestionService:
                     "timestamp_ns": w_start_ns,
                     "dom_bid":      int(dom_bid),
                     "dom_ask":      int(dom_ask),
+                    "dom_min_level":int(dom_min_level),
                 },
+                dom_min_level=int(dom_min_level),
             )
             clusters.append(c)
 
-        # Fase 3 — classify_batch() vetorizado
-        if _PANDAS_AVAILABLE and clusters:
-            self._classify_clusters_batch(clusters)
-        else:
-            # fallback escalar (pandas não instalado)
-            for c in clusters:
-                sig, conf = self.engine.classify(c)
-                c.behavior_signature = sig
-                c.confidence = conf
+        # Fase 3 — classificar (agora via classify único para injetar depth_multipliers corretamente)
+        for c in clusters:
+            sig, conf = self.engine.classify(c)
+            c.behavior_signature = sig
+            c.confidence = conf
 
         if clusters:
             self.last_closed_price = clusters[-1].price
 
         return clusters
-
-    def _classify_clusters_batch(self, clusters: List[LiquidityCluster]) -> None:
-        """
-        Fase 3 — classify_batch() vetorizado.
-
-        Agrupa clusters por sessão (evita mistura de thresholds) e
-        chama engine.classify_batch() por grupo. Escreve behavior_signature
-        e confidence de volta nos objetos in-place.
-
-        delta_price_ticks é coerced para int16 ANTES de passar ao engine
-        para garantir SIMD sem coerção float64 implícita.
-        """
-        from collections import defaultdict
-        session_groups: Dict[str, List[int]] = defaultdict(list)
-        for i, c in enumerate(clusters):
-            session_groups[c.session].append(i)
-
-        for session, indices in session_groups.items():
-            group = [clusters[i] for i in indices]
-            df = pd.DataFrame({
-                "total_bid":         pd.array([c.total_bid         for c in group], dtype="int32"),
-                "total_ask":         pd.array([c.total_ask         for c in group], dtype="int32"),
-                "cumdelta":          pd.array([c.cumdelta          for c in group], dtype="int32"),
-                "deltamin":          pd.array([c.deltamin          for c in group], dtype="int32"),
-                "deltamax":          pd.array([c.deltamax          for c in group], dtype="int32"),
-                # int16 evita coerção float64 no .abs() <= 2 (per review)
-                "delta_price_ticks": pd.array([c.delta_price_ticks for c in group], dtype="int16"),
-                "dom_bid":           pd.array([c.raw_payload.get("dom_bid", 0) for c in group], dtype="int32"),
-                "dom_ask":           pd.array([c.raw_payload.get("dom_ask", 0) for c in group], dtype="int32"),
-            })
-            sigs, confs = self.engine.classify_batch(df, session)
-            for i, (sig_val, conf) in enumerate(zip(sigs, confs)):
-                clusters[indices[i]].behavior_signature = BehaviorSignature(sig_val)
-                clusters[indices[i]].confidence = conf
 
     # =========================================================================
     # PATH A — DOM index (mantido para fallback e testes)
@@ -262,26 +256,28 @@ class IngestionService:
     def _build_dom_index(
         dom_rows: List[Dict],
         tick_size: float,
-        top_n: int = 5,
-    ) -> Dict[int, List[Tuple[int, int, int]]]:
+        top_n: int = 10,
+    ) -> Dict[int, List[Tuple[int, int, int, int]]]:
         if not dom_rows or tick_size <= 0:
             return {}
-        acc: Dict[Tuple[int, int], Tuple[int, int]] = {}
+        acc: Dict[Tuple[int, int], Tuple[int, int, int]] = {}
         for row in dom_rows:
             ts_ns = row.get("timestamp_ns")
             if ts_ns is None:
                 continue
-            if row.get("level_index", top_n) >= top_n:
+            lvl = row.get("level_index", top_n)
+            if lvl >= top_n:
                 continue
             pk  = round(row.get("price", 0.0) / tick_size)
             key = (pk, ts_ns)
-            b, a = acc.get(key, (0, 0))
+            b, a, min_l = acc.get(key, (0, 0, 9))
             acc[key] = (b + row.get("bid_volume", 0),
-                        a + row.get("ask_volume", 0))
-        grouped: Dict[int, List[Tuple[int, int, int]]] = defaultdict(list)
-        for (pk, ts_ns), (b, a) in acc.items():
-            grouped[pk].append((ts_ns, b, a))
-        index: Dict[int, List[Tuple[int, int, int]]] = {}
+                        a + row.get("ask_volume", 0),
+                        min(min_l, lvl))
+        grouped: Dict[int, List[Tuple[int, int, int, int]]] = defaultdict(list)
+        for (pk, ts_ns), (b, a, ml) in acc.items():
+            grouped[pk].append((ts_ns, b, a, ml))
+        index: Dict[int, List[Tuple[int, int, int, int]]] = {}
         for pk, entries in grouped.items():
             entries.sort()
             index[pk] = entries
@@ -289,14 +285,14 @@ class IngestionService:
 
     def _dom_at(
         self,
-        dom_index: Dict[int, List[Tuple[int, int, int]]],
+        dom_index: Dict[int, List[Tuple[int, int, int, int]]],
         price: float,
         end_ns: int,
-    ) -> Tuple[int, int]:
+    ) -> Tuple[int, int, int]:
         pk      = round(price / self.cfg.tick_size)
         entries = dom_index.get(pk)
         if not entries:
-            return (0, 0)
+            return (0, 0, 9)
 
         lo, hi = 0, len(entries)
         while lo < hi:
@@ -307,9 +303,9 @@ class IngestionService:
                 hi = mid
         pos = lo - 1
         if pos < 0:
-            return (0, 0)
-        _, b, a = entries[pos]
-        return (b, a)
+            return (0, 0, 9)
+        _, b, a, ml = entries[pos]
+        return (b, a, ml)
 
     # -- Micro-agregacao em janelas de 250ms ---------------------------------------
 
@@ -352,7 +348,7 @@ class IngestionService:
                 return
 
             dp = round((w_last_price - w_first_price) / self.cfg.tick_size)
-            dom_bid, dom_ask = self._dom_at(dom_index, w_last_price, end_ns)
+            dom_bid, dom_ask, dom_min_level = self._dom_at(dom_index, w_last_price, end_ns)
 
             c = LiquidityCluster(
                 symbol    = symbol,
@@ -366,11 +362,13 @@ class IngestionService:
                 deltamax  = deltamax,
                 delta_price_ticks = dp,
                 batch_id  = batch_id,
+                dom_min_level = dom_min_level,
                 raw_payload = {
                     "window_ns":    w_start_ns,
                     "timestamp_ns": w_start_ns,
                     "dom_bid":      dom_bid,
                     "dom_ask":      dom_ask,
+                    "dom_min_level": dom_min_level,
                 },
             )
             sig, conf = self.engine.classify(c)

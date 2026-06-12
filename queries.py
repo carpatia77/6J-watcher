@@ -65,6 +65,7 @@ def build_mfe_mae_cte(
             c.cumdelta,
             ABS(c.total_bid - c.total_ask)         AS imbalance,
             c.price                                AS c_price,
+            c.dom_min_level                        AS dom_min_level,
             COALESCE(MAX(t.price), c.price)        AS max_future_price,
             COALESCE(MIN(t.price), c.price)        AS min_future_price,
             
@@ -89,7 +90,7 @@ def build_mfe_mae_cte(
                           AND t.timestamp <= c.timestamp + INTERVAL 1 MINUTE * (CASE WHEN c.behavior_signature = 'spoofing_wall' THEN {horizon_spoofing_minutes} ELSE {horizon_minutes} END)
                 END
             )
-        GROUP BY c.timestamp, c.timestamp_ns, c.behavior_signature, c.session, c.price, c.price_slope_4h, c.total_bid, c.total_ask, c.cumdelta
+        GROUP BY c.timestamp, c.timestamp_ns, c.behavior_signature, c.session, c.price, c.price_slope_4h, c.total_bid, c.total_ask, c.cumdelta, c.dom_min_level
     ),
     mfe_mae_calc AS (
         SELECT *,

@@ -103,7 +103,8 @@ class DuckDBRepository:
             confidence         DOUBLE,
             outcome            VARCHAR,
             batch_id           VARCHAR,
-            raw_payload        TEXT
+            raw_payload        TEXT,
+            dom_min_level      INTEGER
         )""")
 
         self.conn.execute("""
@@ -121,6 +122,7 @@ class DuckDBRepository:
             ("dom_levels",         "batch_id",     "VARCHAR"),
             ("liquidity_clusters", "timestamp_ns", "BIGINT"),
             ("liquidity_clusters", "batch_id",     "VARCHAR"),
+            ("liquidity_clusters", "dom_min_level","INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typedef}")
@@ -151,6 +153,7 @@ class DuckDBRepository:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_price         ON liquidity_clusters(price)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_timestamp     ON liquidity_clusters(timestamp)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_symbol_ts     ON liquidity_clusters(symbol, timestamp)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lc_dom_min_level ON liquidity_clusters(dom_min_level)")
         self.conn.execute("DROP INDEX IF EXISTS idx_te_symbol_ts")
 
         # Índices BIGINT (backtest)
@@ -336,10 +339,11 @@ class DuckDBRepository:
             c.outcome,
             c.batch_id,
             _j(c.raw_payload),
+            c.dom_min_level,
         ] for c in clusters]
         if rows:
             self.conn.executemany(
-                "INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO liquidity_clusters VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows,
             )
 

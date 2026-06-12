@@ -61,6 +61,16 @@ class LiquidityCluster:
     outcome:            Optional[str] = None
     batch_id:           str = field(default_factory=lambda: f"{time.time_ns()}")
     raw_payload:        Dict[str, Any] = field(default_factory=dict)
+    dom_min_level:      int   = 9  # 9 = default (mais profundo) — fallback seguro
+
+    @property
+    def depth_band(self) -> str:
+        """Faixa de profundidade DOM para estratificação no profiler e no narrator."""
+        if self.dom_min_level <= 2:
+            return "shallow"
+        if self.dom_min_level <= 5:
+            return "mid"
+        return "deep"
 
     @property
     def imbalance(self) -> int:

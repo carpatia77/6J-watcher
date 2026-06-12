@@ -139,7 +139,60 @@ class SignatureProfiler:
         if perc_df.empty:
             return {"error": "No historical data found."}
 
-        return self._generate_empirical_percentiles(sig_df, perc_df)
+        # Calcula multipliers de profundidade (win_rate por banda relativo ao mid)
+        depth_sql = base_cte + """
+        ,
+        win_by_band AS (
+            SELECT
+                behavior_signature AS sig,
+                CASE 
+                    WHEN dom_min_level <= 2 THEN 'shallow'
+                    WHEN dom_min_level <= 5 THEN 'mid'
+                    ELSE 'deep'
+                END AS depth_band,
+                COUNT(*) AS cnt,
+                SUM(win) * 1.0 / COUNT(*) AS win_rate
+            FROM scored
+            GROUP BY behavior_signature, depth_band
+        )
+        SELECT sig, depth_band, cnt, win_rate
+        FROM win_by_band
+        ORDER BY sig, depth_band
+        """
+        try:
+            depth_rows = self.conn.execute(depth_sql).fetchall()
+        except Exception as e:
+            logger.error("[Profiler] Depth SQL execution failed: %s", e)
+            raise
+
+        raw_bands = {}
+        for (sig, band, cnt, wr) in depth_rows:
+            raw_bands.setdefault(sig, {})[band] = {"cnt": int(cnt), "win_rate": float(wr or 0.0)}
+
+        MIN_DEPTH_SAMPLES = 50
+        depth_multipliers = {}
+        has_depth = False
+
+        for sig, bands in raw_bands.items():
+            mid_wr = bands.get("mid", {}).get("win_rate", 0.0)
+            if mid_wr == 0.0:
+                continue
+
+            sig_mults = {}
+            for band in ("shallow", "mid", "deep"):
+                info = bands.get(band, {})
+                if info.get("cnt", 0) < MIN_DEPTH_SAMPLES:
+                    continue
+                raw_mult = info["win_rate"] / mid_wr
+                sig_mults[band] = round(max(0.5, min(2.0, raw_mult)), 4)
+
+            if sig_mults:
+                sig_mults["mid"] = 1.0
+                depth_multipliers[sig] = sig_mults
+                has_depth = True
+                logger.info("[Profiler] depth_multipliers %s: %s", sig, sig_mults)
+
+        return self._generate_empirical_percentiles(sig_df, perc_df, depth_multipliers, has_depth)
 
     def _get_fallback_thresholds(self, sess: str) -> dict:
         """
@@ -173,15 +226,17 @@ class SignatureProfiler:
         }
         return fallbacks.get(sess, fallbacks["OFF_HOURS"])
 
-    def _generate_empirical_percentiles(self, sig_df, perc_df) -> dict:
+    def _generate_empirical_percentiles(self, sig_df, perc_df, depth_multipliers: dict, has_depth: bool) -> dict:
         profile = {
             "metadata": {
                 "generated_at": datetime.now().isoformat(),
                 "type":         "empirical_percentiles_duckdb",
                 "window_ms":    250,
+                "has_depth_calibration": has_depth,
             },
             "signatures": {},
             "thresholds": {},
+            "depth_multipliers": depth_multipliers,
         }
 
         for _, row in sig_df.iterrows():

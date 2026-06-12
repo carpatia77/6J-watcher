@@ -100,26 +100,27 @@ class AdaptivePatternEngine:
         is_stationary   = abs(delta) <= 1
         is_trending     = abs(delta) >= 2
 
+        sig  = BehaviorSignature.UNKNOWN
+        conf = 0.0
+
         # 1. ABSORPTION PASSIVE (Tier 1)
         if vol_p >= 90 and imb_p >= 90 and is_stationary:
             conf = (vol_p / 100.0 * 0.4) + (imb_p / 100.0 * 0.4) + 0.2
-            return BehaviorSignature.ABSORPTION_PASSIVE, conf
+            sig  = BehaviorSignature.ABSORPTION_PASSIVE
 
         # 2. BREAKOUT GENUINE (Tier 1)
-        if vol_p >= 75 and imb_p >= 75 and is_trending:
+        elif vol_p >= 75 and imb_p >= 75 and is_trending:
             conf = (vol_p / 100.0 * 0.4) + (imb_p / 100.0 * 0.4) + 0.2
-            return BehaviorSignature.BREAKOUT_GENUINE, conf
+            sig  = BehaviorSignature.BREAKOUT_GENUINE
 
         # 3. ICEBERG ACCUMULATION / DISTRIBUTION (Tier 2)
-        if vol_p >= 75 and is_stationary and 50 <= imb_p < 90:
+        elif vol_p >= 75 and is_stationary and 50 <= imb_p < 90:
             conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.2
-            if is_buy_pressure:
-                return BehaviorSignature.ICEBERG_DISTRIBUTION, conf
-            else:
-                return BehaviorSignature.ICEBERG_ACCUMULATION, conf
+            sig  = (BehaviorSignature.ICEBERG_DISTRIBUTION
+                    if is_buy_pressure else BehaviorSignature.ICEBERG_ACCUMULATION)
 
         # 4. SPOOFING WALL (Tier 3)
-        if vol_p >= 75 and imb_p < 50 and is_stationary:
+        elif vol_p >= 75 and imb_p < 50 and is_stationary:
             dom_bid = cluster.raw_payload.get("dom_bid", 0)
             dom_ask = cluster.raw_payload.get("dom_ask", 0)
             dom_contradiction = (
@@ -127,84 +128,31 @@ class AdaptivePatternEngine:
                 (not is_buy_pressure and dom_bid > dom_ask * 2)
             )
             dom_bonus = 0.1 if (dom_bid > 0 or dom_ask > 0) and dom_contradiction else 0.0
-            conf = min(1.0,
-                       (vol_p / 100.0 * 0.5)
-                       + ((100 - imb_p) / 100.0 * 0.3)
-                       + 0.1
-                       + dom_bonus)
-            return BehaviorSignature.SPOOFING_WALL, conf
+            conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.1 + dom_bonus
+            sig  = BehaviorSignature.SPOOFING_WALL
 
         # 5. LIQUIDITY VACUUM (Tier 3)
-        if vol_p < 50 and is_trending:
-            conf = min(1.0, abs(delta) / 5.0 * 0.7 + (1 - vol_p / 100.0) * 0.3)
-            return BehaviorSignature.LIQUIDITY_VACUUM, conf
+        elif vol_p < 50 and is_trending:
+            conf = abs(delta) / 5.0 * 0.7 + (1 - vol_p / 100.0) * 0.3
+            sig  = BehaviorSignature.LIQUIDITY_VACUUM
 
-        return BehaviorSignature.UNKNOWN, 0.0
+        if sig == BehaviorSignature.UNKNOWN:
+            return BehaviorSignature.UNKNOWN, 0.0
 
-    def classify_batch(self, df: "pd.DataFrame", session: str) -> tuple:
+        multiplier = self._depth_multiplier(sig.value, cluster.depth_band)
+        conf = min(1.0, conf * multiplier)
+
+        return sig, conf
+
+    def _depth_multiplier(self, sig: str, band: str) -> float:
         """
-        Vetoriza a classificação para um DataFrame de uma mesma sessão.
-        Retorna (List[BehaviorSignature.value], List[confianca])
+        Lê o multiplicador de profundidade do profile.json.
+        Retorna 1.0 (neutro) se a assinatura não possuir perfil para a banda.
         """
-        import numpy as np
-        
-        stats = self.profile.get("thresholds", {}).get(session, {})
-        if not stats or len(df) == 0:
-            return [BehaviorSignature.UNKNOWN.value] * len(df), [0.0] * len(df)
-            
-        vol_total = df["total_bid"] + df["total_ask"]
-        imbalance = (df["total_bid"] - df["total_ask"]).abs()
-        
-        def get_p_series(val_series, p_dict):
-            p_res = np.zeros(len(val_series), dtype=int)
-            for p in sorted([int(k) for k in p_dict.keys()]):
-                p_res[val_series >= p_dict[str(p)]] = p
-            return p_res
-            
-        vol_p = get_p_series(vol_total, stats.get("vol_percentiles", {}))
-        imb_p = get_p_series(imbalance, stats.get("imb_percentiles", {}))
-        
-        delta = df["delta_price_ticks"].astype("int16")
-        abs_delta = delta.abs()
-        
-        is_buy_pressure = df["total_bid"] > df["total_ask"]
-        is_stationary = abs_delta <= 1
-        is_trending = abs_delta >= 2
-        
-        sigs = np.full(len(df), BehaviorSignature.UNKNOWN.value, dtype=object)
-        confs = np.zeros(len(df), dtype=float)
-        
-        mask1 = (vol_p >= 90) & (imb_p >= 90) & is_stationary
-        sigs[mask1] = BehaviorSignature.ABSORPTION_PASSIVE.value
-        confs[mask1] = (vol_p[mask1] / 100.0 * 0.4) + (imb_p[mask1] / 100.0 * 0.4) + 0.2
-        
-        mask2 = (vol_p >= 75) & (imb_p >= 75) & is_trending & (sigs == BehaviorSignature.UNKNOWN.value)
-        sigs[mask2] = BehaviorSignature.BREAKOUT_GENUINE.value
-        confs[mask2] = (vol_p[mask2] / 100.0 * 0.4) + (imb_p[mask2] / 100.0 * 0.4) + 0.2
-        
-        mask3 = (vol_p >= 75) & is_stationary & (imb_p >= 50) & (imb_p < 90) & (sigs == BehaviorSignature.UNKNOWN.value)
-        buy_iceberg = mask3 & is_buy_pressure
-        sell_iceberg = mask3 & ~is_buy_pressure
-        sigs[buy_iceberg] = BehaviorSignature.ICEBERG_DISTRIBUTION.value
-        sigs[sell_iceberg] = BehaviorSignature.ICEBERG_ACCUMULATION.value
-        confs[mask3] = (vol_p[mask3] / 100.0 * 0.5) + ((100 - imb_p[mask3]) / 100.0 * 0.3) + 0.2
-        
-        mask4 = (vol_p >= 75) & (imb_p < 50) & is_stationary & (sigs == BehaviorSignature.UNKNOWN.value)
-        dom_bid = df.get("dom_bid", np.zeros(len(df)))
-        dom_ask = df.get("dom_ask", np.zeros(len(df)))
-        dom_contradiction = (is_buy_pressure & (dom_ask > dom_bid * 2)) | (~is_buy_pressure & (dom_bid > dom_ask * 2))
-        dom_bonus = np.where(((dom_bid > 0) | (dom_ask > 0)) & dom_contradiction, 0.1, 0.0)
-        
-        sigs[mask4] = BehaviorSignature.SPOOFING_WALL.value
-        c4 = (vol_p[mask4] / 100.0 * 0.5) + ((100 - imb_p[mask4]) / 100.0 * 0.3) + 0.1 + dom_bonus[mask4]
-        confs[mask4] = np.minimum(1.0, c4)
-        
-        mask5 = (vol_p < 50) & is_trending & (sigs == BehaviorSignature.UNKNOWN.value)
-        sigs[mask5] = BehaviorSignature.LIQUIDITY_VACUUM.value
-        c5 = (abs_delta[mask5] / 5.0 * 0.7) + (1 - vol_p[mask5] / 100.0) * 0.3
-        confs[mask5] = np.minimum(1.0, c5)
-        
-        return sigs.tolist(), confs.tolist()
+        mults = self.profile.get("depth_multipliers", {}).get(sig, {})
+        return mults.get(band, 1.0)
+
+
 
     def post_classify(self, price: float, clusters: List[LiquidityCluster]) -> BehaviorSignature:
         """
