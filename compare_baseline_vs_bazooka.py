@@ -58,8 +58,22 @@ def compare_models(baseline_db: str, bazooka_db: str):
             df_baz = conn_baz.execute(query).fetchdf()
             conn_baz.close()
         except Exception as e2:
-            print(f"Erro ao ler banco em andamento: {e2}")
-            df_baz = None
+            print(f"Banco trancado pelo escritor principal (lock). Extraindo via cópia suja...")
+            try:
+                import shutil
+                import os
+                src_db = "/home/aidea/data_backtest/backtest_8months.db"
+                tmp_db = "/home/aidea/data_backtest/backtest_preview.db"
+                shutil.copy(src_db, tmp_db)
+                if os.path.exists(src_db + ".wal"):
+                    shutil.copy(src_db + ".wal", tmp_db + ".wal")
+                
+                conn_baz = duckdb.connect(tmp_db, read_only=True)
+                df_baz = conn_baz.execute(query).fetchdf()
+                conn_baz.close()
+            except Exception as e3:
+                print(f"Erro na cópia suja: {e3}")
+                df_baz = None
 
     if df_base is not None and not df_base.empty:
         base_samples = df_base['total_samples'][0]
