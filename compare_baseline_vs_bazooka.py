@@ -26,7 +26,6 @@ def compare_models(baseline_db: str, bazooka_db: str):
         WHERE behavior_signature = 'absorption_passive'
           AND session = 'LONDON'
           AND timestamp >= '2026-01-01'
-          AND timestamp <  '2026-04-01'  -- Preview do 1º Trimestre (Jan, Fev, Mar)
     )
     SELECT
         COUNT(*) as total_samples,
