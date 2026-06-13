@@ -13,7 +13,7 @@ class AdaptivePatternEngine:
 
     TIER_1 = ["breakout_genuine", "defense_line", "absorption_passive"]
     TIER_2 = ["iceberg_accumulation", "iceberg_distribution"]
-    TIER_3 = ["spoofing_wall", "liquidity_vacuum"]
+    TIER_3 = ["spoofing_wall", "spoofing_bid_pull", "spoofing_ask_pull", "liquidity_vacuum"]
 
     def __init__(self, profile_path: str = "profile.json",
                  tick_size: Optional[float] = None,
@@ -130,6 +130,18 @@ class AdaptivePatternEngine:
             dom_bonus = 0.1 if (dom_bid > 0 or dom_ask > 0) and dom_contradiction else 0.0
             conf = (vol_p / 100.0 * 0.5) + ((100 - imb_p) / 100.0 * 0.3) + 0.1 + dom_bonus
             sig  = BehaviorSignature.SPOOFING_WALL
+
+        # 4.5 SPOOFING PULLS (Fase 2 - Cancelamentos persistentes)
+        cancel_bid = cluster.raw_payload.get("cancel_bid_vol", 0)
+        cancel_ask = cluster.raw_payload.get("cancel_ask_vol", 0)
+        trade_vol  = max(1, vol_total)
+
+        if cancel_bid >= 50 and (cancel_bid / trade_vol) > 5.0:
+            sig = BehaviorSignature.SPOOFING_BID_PULL
+            conf = min(1.0, 0.6 + (cancel_bid / trade_vol) / 20.0)
+        elif cancel_ask >= 50 and (cancel_ask / trade_vol) > 5.0:
+            sig = BehaviorSignature.SPOOFING_ASK_PULL
+            conf = min(1.0, 0.6 + (cancel_ask / trade_vol) / 20.0)
 
         # 5. LIQUIDITY VACUUM (Tier 3)
         elif vol_p < 50 and is_trending:

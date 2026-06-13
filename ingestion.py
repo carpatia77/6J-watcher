@@ -81,11 +81,14 @@ class IngestionService:
         # Se buffers em memoria foram passados, usamos as views registradas (zero disk I/O)
         tape_source = "_tape_view" if tape_rb is not None else "tape_events WHERE symbol = $symbol AND batch_id = $batch_id"
         dom_source  = "_dom_view"  if dom_rb  is not None else "(SELECT * FROM dom_levels WHERE symbol = $symbol AND batch_id = $batch_id)"
+        cancel_source = "_cancel_view" if cancel_rb is not None else "(SELECT * FROM cancel_events WHERE symbol = $symbol AND batch_id = $batch_id)"
 
         if tape_rb is not None:
             self.repo.conn.register("_tape_view", tape_rb)
         if dom_rb is not None:
             self.repo.conn.register("_dom_view", dom_rb)
+        if cancel_rb is not None:
+            self.repo.conn.register("_cancel_view", cancel_rb)
 
         sql = f"""
         WITH tape_ordered AS (
@@ -136,6 +139,16 @@ class IngestionService:
             FROM {dom_source} 
             GROUP BY timestamp_ns
         ),
+        cancels_agg AS (
+            SELECT
+                (timestamp_ns // $bucket_ns) AS bucket_id,
+                SUM(CASE WHEN side = 'buy' THEN size ELSE 0 END) AS cancel_bid_vol,
+                SUM(CASE WHEN side = 'sell' THEN size ELSE 0 END) AS cancel_ask_vol
+            FROM {cancel_source}
+            WHERE snapshots_present >= 3 
+              AND price_level BETWEEN 1 AND 3
+            GROUP BY bucket_id
+        ),
         windowed_with_dom_ts AS (
             SELECT w.*, d.timestamp_ns AS dom_ts
             FROM windowed w
@@ -156,12 +169,16 @@ class IngestionService:
                 w.deltamax,
                 COALESCE(SUM(d.bid_volume), 0) AS dom_bid,
                 COALESCE(SUM(d.ask_volume), 0) AS dom_ask,
-                COALESCE(MIN(d.level_index), 9) AS dom_min_level
+                COALESCE(MIN(d.level_index), 9) AS dom_min_level,
+                COALESCE(MAX(c.cancel_bid_vol), 0) AS cancel_bid_vol,
+                COALESCE(MAX(c.cancel_ask_vol), 0) AS cancel_ask_vol
             FROM windowed_with_dom_ts w
             LEFT JOIN {dom_source} d
                 ON  d.timestamp_ns = w.dom_ts
                 AND d.price >= w.last_price - ($tick_size * 10)
                 AND d.price <= w.last_price + ($tick_size * 10)
+            LEFT JOIN cancels_agg c
+                ON c.bucket_id = w.bucket_id
             GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
         )
         SELECT
@@ -176,7 +193,9 @@ class IngestionService:
             deltamax,
             dom_bid,
             dom_ask,
-            dom_min_level
+            dom_min_level,
+            cancel_bid_vol,
+            cancel_ask_vol
         FROM dom_joined
         ORDER BY w_start_ns
         """
@@ -195,6 +214,8 @@ class IngestionService:
             self.repo.conn.unregister("_tape_view")
         if dom_rb is not None:
             self.repo.conn.unregister("_dom_view")
+        if cancel_rb is not None:
+            self.repo.conn.unregister("_cancel_view")
 
         if not rows:
             return []
@@ -204,7 +225,8 @@ class IngestionService:
             (
                 w_ts, w_start_ns, first_price, last_price,
                 total_bid, total_ask, cumdelta, deltamin, deltamax,
-                dom_bid, dom_ask, dom_min_level
+                dom_bid, dom_ask, dom_min_level,
+                cancel_bid_vol, cancel_ask_vol
             ) = row
 
             # w_ts pode chegar como string (DuckDB → Python) ou datetime
@@ -231,6 +253,8 @@ class IngestionService:
                     "dom_bid":      int(dom_bid),
                     "dom_ask":      int(dom_ask),
                     "dom_min_level":int(dom_min_level),
+                    "cancel_bid_vol": int(cancel_bid_vol),
+                    "cancel_ask_vol": int(cancel_ask_vol),
                 },
                 dom_min_level=int(dom_min_level),
             )

@@ -16,6 +16,8 @@ class BehaviorSignature(str, Enum):
     ICEBERG_ACCUMULATION = "iceberg_accumulation"
     ICEBERG_DISTRIBUTION = "iceberg_distribution"
     SPOOFING_WALL        = "spoofing_wall"
+    SPOOFING_BID_PULL    = "spoofing_bid_pull"
+    SPOOFING_ASK_PULL    = "spoofing_ask_pull"
     ABSORPTION_PASSIVE   = "absorption_passive"
     BREAKOUT_GENUINE     = "breakout_genuine"
     LIQUIDITY_VACUUM     = "liquidity_vacuum"
