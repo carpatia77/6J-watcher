@@ -33,9 +33,9 @@ API_KEY = os.getenv("DATABENTO_API_KEY", "")
 # Cada chunk = 1 arquivo .dbn.zst independente no cache.
 # Meses separados permitem reprocessamento granular sem re-download.
 CHUNKS = [
-    (date(2025, 10, 5),   date(2025, 10, 31)), # Outubro IS (Ignorando dias 1 a 4 por precos corrompidos)
-    # (date(2025, 11, 1),   date(2025, 11, 30)), # Novembro IS
-    # (date(2025, 12, 1),   date(2025, 12, 31)), # Dezembro IS
+    # (date(2025, 10, 5),   date(2025, 10, 31)), # Outubro IS processado
+    (date(2025, 11, 1),   date(2025, 11, 30)), # Novembro IS
+    (date(2025, 12, 1),   date(2025, 12, 31)), # Dezembro IS
 ]
 
 TOTAL_CHUNKS = len(CHUNKS)
