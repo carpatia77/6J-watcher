@@ -69,6 +69,7 @@ class IngestionService:
         batch_id: str,
         tape_rb = None,
         dom_rb = None,
+        cancel_rb = None,
     ) -> List[LiquidityCluster]:
         """
         Substitui _build_clusters_from_windows() no path de backtest.
@@ -429,6 +430,7 @@ class IngestionService:
         is_sql_path: bool = False,
         tape_rb = None,
         dom_rb = None,
+        cancel_rb = None,
     ) -> List[LiquidityCluster]:
         if not batch_id:
             batch_id = str(time.time_ns())
@@ -436,7 +438,7 @@ class IngestionService:
         is_sql_path = is_sql_path or bool(tape_rows and "timestamp_ns" in tape_rows[0])
 
         if is_sql_path:
-            clusters = self._build_clusters_sql(symbol, batch_id, tape_rb, dom_rb)
+            clusters = self._build_clusters_sql(symbol, batch_id, tape_rb, dom_rb, cancel_rb)
             tape = []
             dom  = []
             # Na fase SQL a insercao de tape/dom e feita assincronamente pelo Arrow.

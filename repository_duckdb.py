@@ -90,6 +90,17 @@ class DuckDBRepository:
             raw          TEXT
         )""")
         self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS cancel_events (
+            symbol            VARCHAR,
+            batch_id          VARCHAR,
+            timestamp         TIMESTAMP,
+            timestamp_ns      BIGINT,
+            price_level       INTEGER,
+            side              VARCHAR,
+            size              INTEGER,
+            snapshots_present INTEGER
+        )""")
+        self.conn.execute("""
         CREATE TABLE IF NOT EXISTS liquidity_clusters (
             symbol             VARCHAR,
             timestamp          TIMESTAMP,
@@ -227,6 +238,30 @@ class DuckDBRepository:
                 FROM _dom_rb
             """, [symbol, batch_id])
             self.conn.unregister("_dom_rb")
+
+    def bulk_insert_cancel_arrow(
+        self,
+        symbol: str,
+        batch_id: str,
+        cancel_rb: "pa.RecordBatch"
+    ) -> None:
+        if cancel_rb.num_rows > 0:
+            self.conn.register("_cancel_rb", cancel_rb)
+            self.conn.execute("""
+                INSERT INTO cancel_events
+                    (symbol, batch_id, timestamp, timestamp_ns, price_level, side, size, snapshots_present)
+                SELECT
+                    ? AS symbol,
+                    ? AS batch_id,
+                    timestamp::TIMESTAMP,
+                    timestamp_ns,
+                    price_level,
+                    side,
+                    size,
+                    snapshots_present
+                FROM _cancel_rb
+            """, [symbol, batch_id])
+            self.conn.unregister("_cancel_rb")
 
     def bulk_insert_arrow_table(
         self,

@@ -298,7 +298,7 @@ class BacktestRunner:
         while True:
             t0_stream = time.perf_counter()
             try:
-                tape_rb, dom_rb = next(stream_iter)
+                tape_rb, dom_rb, cancel_rb = next(stream_iter)
             except StopIteration:
                 break
             prof.record("stream", time.perf_counter() - t0_stream)
@@ -313,8 +313,14 @@ class BacktestRunner:
 
                 # Ingestão SQL (Fase 2 — _build_clusters_sql) IN-MEMORY!
                 t0_ingest = time.perf_counter()
-                clusters = self.service.ingest_batch([], [], symbol, batch_id=batch_id, is_sql_path=True, tape_rb=tape_rb, dom_rb=dom_rb)
+                clusters = self.service.ingest_batch([], [], symbol, batch_id=batch_id, is_sql_path=True, tape_rb=tape_rb, dom_rb=dom_rb, cancel_rb=cancel_rb)
                 prof.record("ingest", time.perf_counter() - t0_ingest)
+
+                # Persistir cancel_rb para calibração da Fase 2 (Semana 1)
+                t0_persist = time.perf_counter()
+                if cancel_rb.num_rows > 0:
+                    self.repo.bulk_insert_cancel_arrow(symbol, batch_id, cancel_rb)
+                prof.record("persist", time.perf_counter() - t0_persist)
 
                 # ← FIX: acumula clusters para flush posterior
                 if clusters:

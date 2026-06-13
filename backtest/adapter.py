@@ -40,7 +40,7 @@ class DatabentoAdapter:
         """
         Versão vetorizada de stream_batches() para o backtest.
 
-        Emite (tape_batch, dom_batch) como pyarrow.RecordBatch por
+        Emite (tape_batch, dom_batch, cancel_batch) como pyarrow.RecordBatch por
         janela de batch_size_seconds.
 
         BUG5 FIX: o evento que cruza a fronteira de janela não é mais
@@ -60,9 +60,17 @@ class DatabentoAdapter:
             "timestamp_ns": [], "price": [],
             "level_index": [],  "bid_volume": [], "ask_volume": [],
         }
+        cancel_bufs: dict = {
+            "timestamp_ns": [], "price_level": [], "side": [], 
+            "size": [], "snapshots_present": []
+        }
         batch_start_ns = None
+        
+        # Estado mantido entre snapshots na mesma sessão
+        # (price, side) -> (snapshot_count, last_level_index)
+        _wall_tracker: dict[tuple[float, str], tuple[int, int]] = {}
 
-        def _flush_arrow(tape_b: dict, dom_b: dict) -> Tuple[pa.RecordBatch, pa.RecordBatch]:
+        def _flush_arrow(tape_b: dict, dom_b: dict, cancel_b: dict) -> Tuple[pa.RecordBatch, pa.RecordBatch, pa.RecordBatch]:
             tape_ns = pa.array(tape_b["timestamp_ns"], type=pa.int64())
             tape_rb = pa.record_batch(
                 {
@@ -92,7 +100,19 @@ class DatabentoAdapter:
                     "bid_volume":   pa.array([], type=pa.int32()),
                     "ask_volume":   pa.array([], type=pa.int32()),
             })
-            return tape_rb, dom_rb
+            
+            cancel_ns = pa.array(cancel_b["timestamp_ns"], type=pa.int64())
+            cancel_rb = pa.record_batch(
+                {
+                    "timestamp_ns":      cancel_ns,
+                    "timestamp":         cancel_ns.cast(pa.timestamp('ns', tz='UTC')).cast(pa.string()),
+                    "price_level":       pa.array(cancel_b["price_level"], type=pa.int32()),
+                    "side":              pa.array(cancel_b["side"], type=pa.string()),
+                    "size":              pa.array(cancel_b["size"], type=pa.int32()),
+                    "snapshots_present": pa.array(cancel_b["snapshots_present"], type=pa.int32()),
+                }
+            )
+            return tape_rb, dom_rb, cancel_rb
 
         def _clear(b: dict):
             for k in b:
@@ -104,10 +124,11 @@ class DatabentoAdapter:
                 batch_start_ns = ts_ns
 
             if (ts_ns - batch_start_ns) / 1e9 >= self.batch_size_seconds:
-                if tape_bufs["timestamp_ns"] or dom_bufs["timestamp_ns"]:
-                    yield _flush_arrow(tape_bufs, dom_bufs)
+                if tape_bufs["timestamp_ns"] or dom_bufs["timestamp_ns"] or cancel_bufs["timestamp_ns"]:
+                    yield _flush_arrow(tape_bufs, dom_bufs, cancel_bufs)
                 _clear(tape_bufs)
                 _clear(dom_bufs)
+                _clear(cancel_bufs)
                 batch_start_ns = ts_ns
                 # BUG5 FIX: processa o evento da fronteira para o novo buffer
                 # (antes era pulado silenciosamente após o _clear)
@@ -132,6 +153,27 @@ class DatabentoAdapter:
                         tape_bufs["volume"].append(size)
                         tape_bufs["side"].append(side)
 
+            # Captura de Cancelamentos/Modificações (Fase 2)
+            if action_val in ('C', '67', 67, 'M', '77', 77):
+                size = getattr(record, "size", 0)
+                if size > 0:
+                    side_raw = str(getattr(record, "side", "N"))
+                    side_char = side_raw.split(".")[-1].strip().upper()[0]
+                    side = "buy" if side_char == "B" else ("sell" if side_char == "A" else None)
+                    if side:
+                        p = record.price / 1_000_000_000
+                        # Resgatar contador de persistência e nível
+                        snaps, lvl = _wall_tracker.get((p, side), (0, -1))
+                        if snaps >= 3:
+                            cancel_bufs["timestamp_ns"].append(ts_ns)
+                            cancel_bufs["price_level"].append(lvl)
+                            cancel_bufs["side"].append(side)
+                            cancel_bufs["size"].append(size)
+                            cancel_bufs["snapshots_present"].append(snaps)
+                        
+                        # Resetar contador após cancelamento/modificação
+                        _wall_tracker[(p, side)] = (0, lvl)
+
             if not skip_dom:
                 if hasattr(record, "levels") and record.levels:
                     depth = self.reconstructor.depth
@@ -148,9 +190,23 @@ class DatabentoAdapter:
                         dom_bufs["level_index"].append(i)
                         dom_bufs["bid_volume"].append(0)
                         dom_bufs["ask_volume"].append(lv.ask_sz)
+                        
+                        # Atualizar _wall_tracker
+                        if lv.bid_sz > 0:
+                            bp = lv.bid_px / 1_000_000_000
+                            cnt, _ = _wall_tracker.get((bp, "buy"), (0, i))
+                            _wall_tracker[(bp, "buy")] = (cnt + 1, i)
+                        if lv.ask_sz > 0:
+                            ap = lv.ask_px / 1_000_000_000
+                            cnt, _ = _wall_tracker.get((ap, "sell"), (0, i))
+                            _wall_tracker[(ap, "sell")] = (cnt + 1, i)
+                            
+                # Opcional: evitar memory leak no dict limpando periodicamente
+                if len(_wall_tracker) > 20000:
+                    _wall_tracker.clear()
 
-        if tape_bufs["timestamp_ns"] or dom_bufs["timestamp_ns"]:
-            yield _flush_arrow(tape_bufs, dom_bufs)
+        if tape_bufs["timestamp_ns"] or dom_bufs["timestamp_ns"] or cancel_bufs["timestamp_ns"]:
+            yield _flush_arrow(tape_bufs, dom_bufs, cancel_bufs)
 
     # ------------------------------------------------------------------
     # Path produção: mantido inalterado (MQL5 / main.py)

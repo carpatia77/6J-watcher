@@ -32,13 +32,10 @@ API_KEY = os.getenv("DATABENTO_API_KEY", "")
 
 # Cada chunk = 1 arquivo .dbn.zst independente no cache.
 # Meses separados permitem reprocessamento granular sem re-download.
-# Jun/2026 isolado pois pode ter dados incompletos (lag CME).
 CHUNKS = [
-    # (date(2026, 1, 1),   date(2026, 1, 31)), # PROCESSADO (Salvo Fase 1)
-    # (date(2026, 2, 1),   date(2026, 2, 28)), # PROCESSADO (Salvo Fase 1)
-    # (date(2026, 3, 1),   date(2026, 3, 31)), # PROCESSADO (Salvo Fase 1)
-    # (date(2026, 4, 1),   date(2026, 4, 30)), # PROCESSADO (Fase 2 Abril)
-    (date(2026, 5, 1),   date(2026, 6, 5)),    # FINAL: O arquivo baixado contém Maio e os 5 dias de Junho juntos!
+    (date(2025, 10, 5),   date(2025, 10, 31)), # Outubro IS (Ignorando dias 1 a 4 por precos corrompidos)
+    # (date(2025, 11, 1),   date(2025, 11, 30)), # Novembro IS
+    # (date(2025, 12, 1),   date(2025, 12, 31)), # Dezembro IS
 ]
 
 TOTAL_CHUNKS = len(CHUNKS)
@@ -137,7 +134,7 @@ def main():
     if not os.path.exists(native_db_dir):
         os.makedirs(native_db_dir, exist_ok=True)
         
-    native_db_path = f"{native_db_dir}/backtest_8months.db"
+    native_db_path = f"{native_db_dir}/backtest_2025_train.db"
     
     # REMOVIDO: A delecao incondicional do banco destruiu os 650M de linhas da run anterior!
     # O DuckDB fara o append/upsert normalmente.
