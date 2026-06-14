@@ -1,309 +1,365 @@
 {
   "metadata": {
-    "generated_at": "2026-06-11T20:58:36.936662",
+    "generated_at": "2026-06-13T21:24:31.581413",
     "type": "empirical_percentiles_duckdb",
-    "window_ms": 250
+    "window_ms": 250,
+    "has_depth_calibration": false
   },
   "signatures": {
-    "defense_line_RANGING_LONDON": {
-      "count": 381,
-      "win_rate": 0.499,
-      "profit_factor": 1.09,
-      "avg_mfe": 1.3e-06
-    },
-    "unknown_RANGING_NEW_YORK": {
-      "count": 5332,
+    "unknown_RANGING_ASIAN": {
+      "count": 3653,
       "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "avg_mfe": 1.9e-06
-    },
-    "absorption_passive_RANGING_NEW_YORK": {
-      "count": 642,
-      "win_rate": 0.484,
-      "profit_factor": 0.95,
-      "avg_mfe": 1.4e-06
-    },
-    "unknown_RANGING_OFF_HOURS": {
-      "count": 402,
-      "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "avg_mfe": 1.5e-06
-    },
-    "iceberg_distribution_RANGING_ASIAN": {
-      "count": 266,
-      "win_rate": 0.56,
-      "profit_factor": 0.98,
-      "avg_mfe": 1.4e-06
-    },
-    "unknown_TRENDING_NEW_YORK": {
-      "count": 541,
-      "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "avg_mfe": 2.5e-06
-    },
-    "absorption_passive_TRENDING_NEW_YORK": {
-      "count": 59,
-      "win_rate": 0.458,
-      "profit_factor": 0.7,
-      "avg_mfe": 1.8e-06
-    },
-    "iceberg_accumulation_RANGING_LONDON": {
-      "count": 198,
-      "win_rate": 0.566,
-      "profit_factor": 1.94,
-      "avg_mfe": 1.7e-06
-    },
-    "defense_line_TRENDING_LONDON": {
-      "count": 55,
-      "win_rate": 0.527,
-      "profit_factor": 1.04,
-      "avg_mfe": 2.9e-06
-    },
-    "absorption_passive_RANGING_OFF_HOURS": {
-      "count": 56,
-      "win_rate": 0.536,
-      "profit_factor": 1.21,
-      "avg_mfe": 1e-06
-    },
-    "unknown_TRENDING_OFF_HOURS": {
-      "count": 182,
-      "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "avg_mfe": 3.2e-06
-    },
-    "iceberg_distribution_TRENDING_LONDON": {
-      "count": 33,
-      "win_rate": 0.455,
-      "profit_factor": 1.42,
-      "avg_mfe": 1.9e-06
-    },
-    "unknown_RANGING_LONDON": {
-      "count": 2609,
-      "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "avg_mfe": 2e-06
-    },
-    "iceberg_accumulation_RANGING_NEW_YORK": {
-      "count": 503,
-      "win_rate": 0.455,
-      "profit_factor": 0.87,
-      "avg_mfe": 1.3e-06
-    },
-    "defense_line_RANGING_NEW_YORK": {
-      "count": 824,
-      "win_rate": 0.492,
-      "profit_factor": 1.21,
-      "avg_mfe": 1.4e-06
-    },
-    "defense_line_RANGING_OFF_HOURS": {
-      "count": 50,
-      "win_rate": 0.4,
-      "profit_factor": 0.47,
-      "avg_mfe": 6e-07
-    },
-    "iceberg_accumulation_RANGING_OFF_HOURS": {
-      "count": 46,
-      "win_rate": 0.391,
-      "profit_factor": 1.14,
-      "avg_mfe": 1.4e-06
-    },
-    "defense_line_TRENDING_NEW_YORK": {
-      "count": 68,
-      "win_rate": 0.412,
-      "profit_factor": 0.77,
-      "avg_mfe": 1.5e-06
-    },
-    "absorption_passive_RANGING_LONDON": {
-      "count": 294,
-      "win_rate": 0.503,
-      "profit_factor": 0.86,
-      "avg_mfe": 1.4e-06
-    },
-    "iceberg_accumulation_TRENDING_ASIAN": {
-      "count": 93,
-      "win_rate": 0.452,
-      "profit_factor": 1.2,
-      "avg_mfe": 5.8e-06
-    },
-    "spoofing_wall_RANGING_ASIAN": {
-      "count": 77,
-      "win_rate": 0.364,
-      "profit_factor": 0.78,
-      "avg_mfe": 1.3e-06
-    },
-    "unknown_TRENDING_LONDON": {
-      "count": 383,
-      "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "avg_mfe": 4.1e-06
-    },
-    "absorption_passive_TRENDING_LONDON": {
-      "count": 48,
-      "win_rate": 0.438,
-      "profit_factor": 0.45,
-      "avg_mfe": 1.5e-06
-    },
-    "iceberg_distribution_TRENDING_NEW_YORK": {
-      "count": 45,
-      "win_rate": 0.4,
-      "profit_factor": 0.57,
-      "avg_mfe": 1.4e-06
-    },
-    "defense_line_RANGING_ASIAN": {
-      "count": 465,
-      "win_rate": 0.477,
-      "profit_factor": 2.54,
-      "avg_mfe": 2.3e-06
-    },
-    "iceberg_accumulation_RANGING_ASIAN": {
-      "count": 267,
-      "win_rate": 0.483,
-      "profit_factor": 1.34,
-      "avg_mfe": 1.8e-06
-    },
-    "iceberg_distribution_RANGING_LONDON": {
-      "count": 229,
-      "win_rate": 0.524,
-      "profit_factor": 0.81,
-      "avg_mfe": 1.4e-06
-    },
-    "iceberg_accumulation_TRENDING_NEW_YORK": {
-      "count": 49,
-      "win_rate": 0.388,
-      "profit_factor": 0.73,
-      "avg_mfe": 2e-06
-    },
-    "spoofing_wall_RANGING_NEW_YORK": {
-      "count": 134,
-      "win_rate": 0.47,
-      "profit_factor": 1.45,
-      "avg_mfe": 1.1e-06
-    },
-    "defense_line_TRENDING_ASIAN": {
-      "count": 135,
-      "win_rate": 0.393,
-      "profit_factor": 0.64,
-      "avg_mfe": 3.1e-06
-    },
-    "iceberg_distribution_TRENDING_ASIAN": {
-      "count": 95,
-      "win_rate": 0.526,
-      "profit_factor": 1.61,
-      "avg_mfe": 4.9e-06
-    },
-    "unknown_TRENDING_ASIAN": {
-      "count": 833,
-      "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "avg_mfe": 4.5e-06
+      "profit_factor": 0.0,
+      "avg_mfe": 0
     },
     "iceberg_distribution_RANGING_NEW_YORK": {
-      "count": 508,
-      "win_rate": 0.535,
-      "profit_factor": 1.21,
-      "avg_mfe": 1.5e-06
-    },
-    "unknown_RANGING_ASIAN": {
-      "count": 3273,
+      "count": 491,
       "win_rate": 0.0,
-      "profit_factor": Infinity,
-      "avg_mfe": 1.8e-06
+      "profit_factor": 0.0,
+      "avg_mfe": 0
     },
     "absorption_passive_RANGING_ASIAN": {
-      "count": 418,
-      "win_rate": 0.517,
-      "profit_factor": 0.62,
-      "avg_mfe": 1.4e-06
+      "count": 326,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "unknown_TRENDING_ASIAN": {
+      "count": 718,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_ask_pull_RANGING_ASIAN": {
+      "count": 228,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_bid_pull_TRENDING_ASIAN": {
+      "count": 48,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
     },
     "iceberg_distribution_RANGING_OFF_HOURS": {
-      "count": 45,
-      "win_rate": 0.511,
-      "profit_factor": 1.52,
-      "avg_mfe": 1.2e-06
+      "count": 38,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_bid_pull_RANGING_LONDON": {
+      "count": 136,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
     },
     "absorption_passive_TRENDING_ASIAN": {
-      "count": 143,
-      "win_rate": 0.462,
-      "profit_factor": 0.79,
-      "avg_mfe": 4.7e-06
+      "count": 48,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
     },
-    "spoofing_wall_RANGING_LONDON": {
-      "count": 54,
-      "win_rate": 0.333,
-      "profit_factor": 0.49,
-      "avg_mfe": 9e-07
+    "spoofing_ask_pull_TRENDING_ASIAN": {
+      "count": 43,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
     },
     "iceberg_accumulation_TRENDING_LONDON": {
+      "count": 31,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_wall_RANGING_LONDON": {
+      "count": 42,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_accumulation_RANGING_NEW_YORK": {
+      "count": 504,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "unknown_RANGING_LONDON": {
+      "count": 1914,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "unknown_TRENDING_LONDON": {
+      "count": 359,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_distribution_TRENDING_NEW_YORK": {
+      "count": 69,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "defense_line_RANGING_NEW_YORK": {
+      "count": 805,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "defense_line_TRENDING_NEW_YORK": {
+      "count": 74,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_accumulation_RANGING_OFF_HOURS": {
       "count": 30,
-      "win_rate": 0.567,
-      "profit_factor": 1.52,
-      "avg_mfe": 3.5e-06
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_ask_pull_RANGING_LONDON": {
+      "count": 140,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_bid_pull_RANGING_ASIAN": {
+      "count": 222,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "absorption_passive_RANGING_LONDON": {
+      "count": 230,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_wall_RANGING_ASIAN": {
+      "count": 79,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_accumulation_TRENDING_ASIAN": {
+      "count": 45,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "defense_line_RANGING_OFF_HOURS": {
+      "count": 42,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "absorption_passive_TRENDING_LONDON": {
+      "count": 41,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_distribution_TRENDING_ASIAN": {
+      "count": 44,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "defense_line_RANGING_ASIAN": {
+      "count": 549,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_distribution_RANGING_LONDON": {
+      "count": 163,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_wall_RANGING_NEW_YORK": {
+      "count": 143,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_bid_pull_RANGING_NEW_YORK": {
+      "count": 299,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_accumulation_TRENDING_NEW_YORK": {
+      "count": 54,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "defense_line_TRENDING_ASIAN": {
+      "count": 114,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_bid_pull_RANGING_OFF_HOURS": {
+      "count": 30,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_accumulation_RANGING_ASIAN": {
+      "count": 308,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "unknown_RANGING_NEW_YORK": {
+      "count": 5168,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "unknown_TRENDING_NEW_YORK": {
+      "count": 532,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "unknown_RANGING_OFF_HOURS": {
+      "count": 361,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "defense_line_RANGING_LONDON": {
+      "count": 310,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "absorption_passive_TRENDING_NEW_YORK": {
+      "count": 42,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_ask_pull_RANGING_NEW_YORK": {
+      "count": 228,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "absorption_passive_RANGING_NEW_YORK": {
+      "count": 496,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_distribution_RANGING_ASIAN": {
+      "count": 298,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_ask_pull_TRENDING_NEW_YORK": {
+      "count": 37,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "defense_line_TRENDING_LONDON": {
+      "count": 47,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_accumulation_RANGING_LONDON": {
+      "count": 196,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "spoofing_bid_pull_TRENDING_NEW_YORK": {
+      "count": 40,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
+    },
+    "iceberg_distribution_TRENDING_LONDON": {
+      "count": 35,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "avg_mfe": 0
     }
   },
   "thresholds": {
     "NEW_YORK": {
       "vol_percentiles": {
-        "50": 5.0,
+        "50": 4.0,
         "75": 12.0,
-        "90": 25.0,
-        "95": 39.0,
-        "99": 83.0
+        "90": 24.0,
+        "95": 37.0,
+        "99": 91.03999999999905
       },
       "imb_percentiles": {
-        "50": 4.0,
-        "75": 10.0,
-        "90": 19.0,
-        "95": 29.0,
-        "99": 66.0
+        "50": 3.0,
+        "75": 9.0,
+        "90": 17.400000000000546,
+        "95": 27.0,
+        "99": 65.0
       }
     },
     "OFF_HOURS": {
       "vol_percentiles": {
-        "50": 4.0,
-        "75": 11.0,
-        "90": 20.700000000000045,
-        "95": 30.0,
-        "99": 51.0
+        "50": 3.0,
+        "75": 9.0,
+        "90": 18.0,
+        "95": 26.0,
+        "99": 48.72000000000003
       },
       "imb_percentiles": {
         "50": 3.0,
-        "75": 8.0,
-        "90": 15.0,
-        "95": 24.0,
-        "99": 47.370000000000005
-      }
-    },
-    "LONDON": {
-      "vol_percentiles": {
-        "50": 5.0,
-        "75": 11.0,
-        "90": 23.0,
-        "95": 33.0,
-        "99": 74.0
-      },
-      "imb_percentiles": {
-        "50": 4.0,
-        "75": 9.0,
-        "90": 17.0,
-        "95": 25.0,
-        "99": 53.0
+        "75": 7.0,
+        "90": 12.600000000000023,
+        "95": 18.0,
+        "99": 38.08000000000004
       }
     },
     "ASIAN": {
       "vol_percentiles": {
         "50": 4.0,
-        "75": 11.0,
-        "90": 23.0,
-        "95": 34.0,
-        "99": 77.10000000000036
+        "75": 10.0,
+        "90": 20.0,
+        "95": 29.0,
+        "99": 62.56999999999971
       },
       "imb_percentiles": {
         "50": 3.0,
-        "75": 8.0,
+        "75": 7.0,
+        "90": 14.0,
+        "95": 22.0,
+        "99": 49.56999999999971
+      }
+    },
+    "LONDON": {
+      "vol_percentiles": {
+        "50": 4.0,
+        "75": 11.0,
+        "90": 22.0,
+        "95": 35.0,
+        "99": 94.07000000000016
+      },
+      "imb_percentiles": {
+        "50": 3.0,
+        "75": 8.75,
         "90": 17.0,
-        "95": 24.0,
-        "99": 52.0
+        "95": 28.34999999999991,
+        "99": 74.07000000000016
       }
     }
-  }
+  },
+  "depth_multipliers": {}
 }
