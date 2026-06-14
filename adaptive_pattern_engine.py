@@ -136,10 +136,10 @@ class AdaptivePatternEngine:
         cancel_ask = cluster.raw_payload.get("cancel_ask_vol", 0)
         trade_vol  = max(1, vol_total)
 
-        if cancel_bid >= 50 and (cancel_bid / trade_vol) > 5.0:
+        if cancel_bid >= 38 and (cancel_bid / trade_vol) > 5.0:
             sig = BehaviorSignature.SPOOFING_BID_PULL
             conf = min(1.0, 0.6 + (cancel_bid / trade_vol) / 20.0)
-        elif cancel_ask >= 50 and (cancel_ask / trade_vol) > 5.0:
+        elif cancel_ask >= 38 and (cancel_ask / trade_vol) > 5.0:
             sig = BehaviorSignature.SPOOFING_ASK_PULL
             conf = min(1.0, 0.6 + (cancel_ask / trade_vol) / 20.0)
 
